@@ -1,3 +1,3 @@
 [submodule "hssqlppp"]
 	path = hssqlppp
-	url = git@github.com:JakeWheat/hssqlppp.git
+	url = git@github.com:lucasbraun/hssqlppp.git
