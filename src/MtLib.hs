@@ -1,13 +1,24 @@
 module MtLib 
 (
-     mtParse
+    MtFromUniversalFunc
+    ,MtToUniversalFunc
+    ,MtTransformable
+    ,MtAttributeComparability(..)
+    ,MtAttributeName
+    ,MtAttributeSpec
+    ,MtSpecificTable
+    ,MtTableSpec(..)
+    ,MtTableName
+    ,MtSchemaSpec
+    ,mtSchemaSpecFromList
+    ,mtSpecificTableFromList
+    ,mtParse
     ,mtPrettyPrint
 ) where
 
 import qualified Data.Map as M
 
 import qualified Database.HsSqlPpp.Parse as Pa
--- import qualified Database.HsSqlPpp.Internals.AstInternal as A
 import qualified Data.Text.Lazy as L
 import qualified Database.HsSqlPpp.Pretty as Pr
 
@@ -22,6 +33,13 @@ type MtSpecificTable            = M.Map MtAttributeName MtAttributeSpec
 data MtTableSpec                = MtGlobalTable | MtTSpecificTable
 type MtTableName                = String
 type MtSchemaSpec               = M.Map MtTableName MtTableSpec
+
+-- Type Construction helper functions
+mtSchemaSpecFromList :: [(MtTableName, MtTableSpec)] -> MtSchemaSpec
+mtSchemaSpecFromList l = M.fromList l
+
+mtSpecificTableFromList :: [(MtAttributeName, MtAttributeSpec)] -> MtSpecificTable
+mtSpecificTableFromList l = M.fromList l
 
 mtParse :: String -> Either Pa.ParseErrorExtra Pa.QueryExpr
 mtParse query = Pa.parseQueryExpr
