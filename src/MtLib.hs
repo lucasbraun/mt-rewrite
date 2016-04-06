@@ -2,18 +2,21 @@ module MtLib
 (
     MtFromUniversalFunc
     ,MtToUniversalFunc
-    ,MtTransformable
     ,MtAttributeComparability(..)
     ,MtAttributeName
-    ,MtAttributeSpec
     ,MtSpecificTable
     ,MtTableSpec(..)
     ,MtTableName
     ,MtSchemaSpec
     ,mtSchemaSpecFromList
     ,mtSpecificTableFromList
+    ,ParseResult
     ,mtParse
     ,mtPrettyPrint
+    ,MtRewriteError
+    ,MtRewriteResult
+    ,mtRewrite
+    ,mtPrettyPrintRewrittenQuery
 ) where
 
 import qualified Data.Map as M
@@ -25,12 +28,16 @@ import qualified Database.HsSqlPpp.Pretty as Pr
 -- MT types and type classes
 type MtFromUniversalFunc        = String
 type MtToUniversalFunc          = String
-type MtTransformable            = (MtToUniversalFunc, MtFromUniversalFunc)
-data MtAttributeComparability   = MtComparable | MtTransformable | MtSpecific
+
+data MtAttributeComparability   =
+    MtComparable
+    | MtTransformable MtToUniversalFunc MtFromUniversalFunc
+    | MtSpecific
+
 type MtAttributeName            = String
-type MtAttributeSpec            = (MtAttributeName, MtAttributeComparability)
-type MtSpecificTable            = M.Map MtAttributeName MtAttributeSpec
-data MtTableSpec                = MtGlobalTable | MtTSpecificTable
+type MtSpecificTable            = M.Map MtAttributeName MtAttributeComparability
+data MtTableSpec                = MtGlobalTable | FromMtSpecificTable MtSpecificTable
+
 type MtTableName                = String
 type MtSchemaSpec               = M.Map MtTableName MtTableSpec
 
@@ -38,16 +45,39 @@ type MtSchemaSpec               = M.Map MtTableName MtTableSpec
 mtSchemaSpecFromList :: [(MtTableName, MtTableSpec)] -> MtSchemaSpec
 mtSchemaSpecFromList l = M.fromList l
 
-mtSpecificTableFromList :: [(MtAttributeName, MtAttributeSpec)] -> MtSpecificTable
+mtSpecificTableFromList :: [(MtAttributeName, MtAttributeComparability)] -> MtSpecificTable
 mtSpecificTableFromList l = M.fromList l
 
-mtParse :: String -> Either Pa.ParseErrorExtra Pa.QueryExpr
+-- Parsing and Printing
+type ParseResult = Either Pa.ParseErrorExtra Pa.QueryExpr
+
+mtParse :: String -> ParseResult
 mtParse query = Pa.parseQueryExpr
                     Pa.defaultParseFlags
                     "./err.txt"
                     (Just (0,0))
                     (L.pack query)
 
-mtPrettyPrint :: Either Pa.ParseErrorExtra Pa.QueryExpr -> String
-mtPrettyPrint (Right exp) = L.unpack $ Pr.prettyQueryExpr Pr.defaultPrettyFlags exp
+mtPrettyPrint :: ParseResult -> String
 mtPrettyPrint (Left err) = show err
+mtPrettyPrint (Right query) = L.unpack $ Pr.prettyQueryExpr Pr.defaultPrettyFlags query
+
+-- MT Rewrite
+type MtRewriteError = Either Pa.ParseErrorExtra String
+type MtRewriteResult = Either MtRewriteError Pa.QueryExpr
+
+mtRewrite :: ParseResult -> MtSchemaSpec -> MtRewriteResult
+mtRewrite (Left err) _ = Left (Left err)
+mtRewrite (Right (Pa.Select ann selDistinct selSelectList selTref selWhere
+    selGroupBy selHaving selOrderBy selLimit selOffset selOption)) spec =
+        mtRewriteSelect (Pa.Select ann selDistinct selSelectList selTref selWhere
+    selGroupBy selHaving selOrderBy selLimit selOffset selOption) spec
+
+mtRewriteSelect :: Pa.QueryExpr -> MtSchemaSpec -> MtRewriteResult
+mtRewriteSelect query spec = (Right query)
+-- TODO: continue here
+
+mtPrettyPrintRewrittenQuery :: MtRewriteResult -> String
+mtPrettyPrintRewrittenQuery (Left (Left err)) = show err
+mtPrettyPrintRewrittenQuery (Left (Right err)) = err
+mtPrettyPrintRewrittenQuery (Right query) = L.unpack $ Pr.prettyQueryExpr Pr.defaultPrettyFlags query
