@@ -43,10 +43,10 @@ type MtSchemaSpec               = M.Map MtTableName MtTableSpec
 
 -- Type Construction helper functions
 mtSchemaSpecFromList :: [(MtTableName, MtTableSpec)] -> MtSchemaSpec
-mtSchemaSpecFromList l = M.fromList l
+mtSchemaSpecFromList = M.fromList
 
 mtSpecificTableFromList :: [(MtAttributeName, MtAttributeComparability)] -> MtSpecificTable
-mtSpecificTableFromList l = M.fromList l
+mtSpecificTableFromList = M.fromList
 
 -- Parsing and Printing
 type ParseResult = Either Pa.ParseErrorExtra Pa.QueryExpr
@@ -74,7 +74,7 @@ mtRewrite (Right (Pa.Select ann selDistinct selSelectList selTref selWhere
     selGroupBy selHaving selOrderBy selLimit selOffset selOption) spec
 
 mtRewriteSelect :: Pa.QueryExpr -> MtSchemaSpec -> MtRewriteResult
-mtRewriteSelect query spec = (Right query)
+mtRewriteSelect query spec = Right query
 -- TODO: continue here
 
 mtPrettyPrintRewrittenQuery :: MtRewriteResult -> String
