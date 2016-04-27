@@ -13,11 +13,6 @@ generateSupplierTable = mtSpecificTableFromList
     ,("S_COMMENT", MtComparable)
     ]
 
--- generateCustomerTableSpec :: MtTableSpec
--- generateCustomerTableSpec = mtSpecificTableFromList
---     [
---     ]
-
 generateTestSchema :: MtSchemaSpec
 generateTestSchema = mtSchemaSpecFromList
     [("REGION", MtGlobalTable)
@@ -27,9 +22,9 @@ generateTestSchema = mtSchemaSpecFromList
 
 main :: IO ()
 main = do
-    let queries = ["SELECT * From Emp;",
-                   "SELECT name From Emp;",
-                   "SELECT name from Emp WHERE age > 42;"]
+    let queries = ["SELECT * FROM SUPPLIER;",
+                   "SELECT SUPPLIER.S_NAME FROM SUPPLIER;",
+                   "SELECT SUPPLIER.S_NAME FROM SUPPLIER WHERE S_ACCTBAL > 42;"]
     let schemaSpec = generateTestSchema
     
     -- test pretty print
@@ -43,7 +38,7 @@ main = do
         putStrLn $ "\n" ++ query ++ " parses to:"
         let parsedQuery = mtParse query
         print parsedQuery
-        putStrLn $ "\n Its rewritten form is:\n  " ++ mtPrettyPrintRewrittenQuery (mtRewrite parsedQuery schemaSpec)
+        putStrLn $ "\n Its rewritten form is:\n  " ++ mtPrettyPrintRewrittenQuery (mtRewrite schemaSpec parsedQuery)
         )
         queries
 

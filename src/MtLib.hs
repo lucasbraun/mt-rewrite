@@ -66,15 +66,32 @@ mtPrettyPrint (Right query) = L.unpack $ Pr.prettyQueryExpr Pr.defaultPrettyFlag
 type MtRewriteError = Either Pa.ParseErrorExtra String
 type MtRewriteResult = Either MtRewriteError Pa.QueryExpr
 
-mtRewrite :: ParseResult -> MtSchemaSpec -> MtRewriteResult
-mtRewrite (Left err) _ = Left (Left err)
-mtRewrite (Right (Pa.Select ann selDistinct selSelectList selTref selWhere
-    selGroupBy selHaving selOrderBy selLimit selOffset selOption)) spec =
-        mtRewriteSelect (Pa.Select ann selDistinct selSelectList selTref selWhere
-    selGroupBy selHaving selOrderBy selLimit selOffset selOption) spec
+mtGetTenantIdentifier :: String -> String
+mtGetTenantIdentifier s = s ++ "_TENANT_KEY"
 
-mtRewriteSelect :: Pa.QueryExpr -> MtSchemaSpec -> MtRewriteResult
-mtRewriteSelect query spec = Right query
+mtRewrite :: MtSchemaSpec -> ParseResult -> MtRewriteResult
+mtRewrite _ (Left err) = Left (Left err)
+mtRewrite spec (Right (Pa.Select ann selDistinct selSelectList selTref selWhere
+    selGroupBy selHaving selOrderBy selLimit selOffset selOption)) =
+        Right (
+            Pa.Select ann selDistinct
+            (mtRewriteSelectList spec selTref selSelectList)
+            selTref selWhere
+            selGroupBy selHaving selOrderBy selLimit selOffset selOption
+        )
+
+mtRewriteSelectList :: MtSchemaSpec -> Pa.TableRefList -> Pa.SelectList -> Pa.SelectList
+mtRewriteSelectList spec tref (Pa.SelectList ann items) = Pa.SelectList ann (concatMap (mtRewriteSelectItem spec tref) items)
+
+mtRewriteSelectItem :: MtSchemaSpec -> Pa.TableRefList -> Pa.SelectItem -> [Pa.SelectItem]
+-- replaces Star Expressions with an enumeration of all attributes instead (* would also display tenant key, which is something we do not want)
+mtRewriteSelectItem spec [Pa.Tref tAnn (Pa.Name nameAnn [Pa.Nmc tname])] (Pa.SelExp selAnn (Pa.Star starAnn)) =
+    let tableSpec = M.lookup tname spec
+        generate (Just (FromMtSpecificTable tab)) = map (Pa.SelExp selAnn . Pa.StringLit starAnn) (M.keys tab)
+        generate _ = [Pa.SelExp selAnn (Pa.Star starAnn)]
+    in generate tableSpec
+-- default case
+mtRewriteSelectItem spec tref item = [item]
 -- TODO: continue here
 
 mtPrettyPrintRewrittenQuery :: MtRewriteResult -> String
