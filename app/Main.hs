@@ -64,7 +64,8 @@ main = do
         putStrLn $ "\n" ++ query ++ " parses to:"
         let parsedQuery = mtParse query
         print parsedQuery
-        putStrLn $ "\n Its rewritten form is:\n  " ++ mtPrettyPrintRewrittenQuery (mtRewrite schemaSpec (client, dataset) parsedQuery)
+        let rewrittenQuery = mtRewrite schemaSpec (client, dataset) query
+        putStrLn $ "\n Its rewritten form is:\n  " ++ mtPrettyPrintRewrittenQuery rewrittenQuery
         )
         queries
 

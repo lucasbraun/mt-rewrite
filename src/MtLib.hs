@@ -15,8 +15,6 @@ module MtLib
     ,ParseResult
     ,mtParse
     ,mtPrettyPrint
-    ,MtRewriteError
-    ,MtRewriteResult
     ,mtRewrite
     ,mtPrettyPrintRewrittenQuery
 ) where
@@ -59,7 +57,7 @@ type ParseResult = Either Pa.ParseErrorExtra Pa.QueryExpr
 mtParse :: String -> ParseResult
 mtParse query = Pa.parseQueryExpr
                     Pa.defaultParseFlags
-                    "./err.txt"
+                    "source"
                     (Just (0,0))
                     (L.pack query)
 
@@ -68,22 +66,13 @@ mtPrettyPrint (Left err) = show err
 mtPrettyPrint (Right query) = L.unpack $ Pr.prettyQueryExpr Pr.defaultPrettyFlags query
 
 -- MT Rewrite
-type MtRewriteError = Either Pa.ParseErrorExtra String
-type MtRewriteResult = Either MtRewriteError Pa.QueryExpr
-
 mtGetTenantIdentifier :: MtTableName -> String
 mtGetTenantIdentifier s = s ++ "_TENANT_KEY"
 
-mtRewrite :: MtSchemaSpec -> (MtClient, MtDataSet) -> ParseResult -> MtRewriteResult
-mtRewrite _ _ (Left err) = Left (Left err)
-mtRewrite spec config (Right (Pa.Select ann selDistinct selSelectList selTref selWhere
-    selGroupBy selHaving selOrderBy selLimit selOffset selOption)) =
-        Right (
-            Pa.Select ann selDistinct
-            (mtRewriteSelectList spec config selTref selSelectList)
-            selTref selWhere
-            selGroupBy selHaving selOrderBy selLimit selOffset selOption
-        )
+mtRewrite :: MtSchemaSpec -> (MtClient, MtDataSet) -> String -> ParseResult
+mtRewrite spec config query = do
+    parsedQuery <- mtParse query
+    Right ((\(Pa.Select ann selDistinct selSelectList selTref selWhere selGroupBy selHaving selOrderBy selLimit selOffset selOption) -> (Pa.Select ann selDistinct (mtRewriteSelectList spec config selTref selSelectList) selTref selWhere selGroupBy selHaving selOrderBy selLimit selOffset selOption)) parsedQuery)
 
 mtRewriteSelectList :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.SelectList -> Pa.SelectList
 mtRewriteSelectList spec config tref (Pa.SelectList ann items) = Pa.SelectList ann (concatMap (mtRewriteSelectItem spec config tref) items)
@@ -113,7 +102,6 @@ mtAnnotateSelectList :: MtSchemaSpec -> Pa.TableRefList -> Pa.SelectList -> Pa.S
 mtAnnotateSelectList spec tref (Pa.SelectList ann items) = Pa.SelectList ann items
 -- TODO: continue here
 
-mtPrettyPrintRewrittenQuery :: MtRewriteResult -> String
-mtPrettyPrintRewrittenQuery (Left (Left err)) = show err
-mtPrettyPrintRewrittenQuery (Left (Right err)) = err
+mtPrettyPrintRewrittenQuery :: ParseResult -> String
+mtPrettyPrintRewrittenQuery (Left err) = show err
 mtPrettyPrintRewrittenQuery (Right query) = L.unpack $ Pr.prettyQueryExpr Pr.defaultPrettyFlags query
