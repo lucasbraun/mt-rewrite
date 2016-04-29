@@ -43,7 +43,7 @@ generateTestSchema = mtSchemaSpecFromList
 main :: IO ()
 main = do
     let queries = ["SELECT * FROM SUPPLIER;"
-                   ,"SELECT SUPPLIER.S_NAME FROM SUPPLIER;"
+                   ,"SELECT S_NAME FROM SUPPLIER;"
                    ,"SELECT SUPPLIER.S_NAME FROM SUPPLIER WHERE S_ACCTBAL > 42;"
                    ,"SELECT S.S_NAME as SUP_NAME, N.N_NAME as NAT_NAME FROM SUPPLIER S, NATION N WHERE S.S_NATIONKEY = N.N_NATIONKEY"
                    ,"SELECT max(S_ACCT) as NATIONMAX FROM (SELECT avg(S_ACCTBAL) as S_ACCT FROM SUPPLIER GROUP BY S_NATIONKEY)"
@@ -65,7 +65,7 @@ main = do
         let parsedQuery = mtParse query
         print parsedQuery
         let rewrittenQuery = mtRewrite schemaSpec (client, dataset) query
-        putStrLn $ "\n Its rewritten form is:\n  " ++ mtPrettyPrintRewrittenQuery rewrittenQuery
+        putStrLn $ "\n Its rewritten form is:\n  " ++ mtPrettyPrint rewrittenQuery
         )
         queries
 
