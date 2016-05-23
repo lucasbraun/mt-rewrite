@@ -11,4 +11,5 @@ git submodule update --init
 cd hssqlppp
 git checkout master
 git pull
+cd ..
 ```
