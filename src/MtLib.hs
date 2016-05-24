@@ -81,27 +81,77 @@ mtRewrite :: MtSchemaSpec -> (MtClient, MtDataSet) -> String -> MtSqlTree
 mtRewrite spec config query = do
     parsedQuery <- mtParse query
     let annotatedQuery = mtAnnotate spec parsedQuery
-    Right $
-        (\(Pa.Select
-            ann selDistinct selSelectList selTref selWhere
-            selGroupBy selHaving selOrderBy selLimit selOffset selOption) 
-                -> (Pa.Select ann selDistinct
-                    (mtRewriteSelectList spec config selTref selSelectList)
-                    selTref selWhere selGroupBy selHaving selOrderBy selLimit selOffset selOption)
-        )
-        annotatedQuery
+    let rewrittenQuery = mtRewriteQuery spec config annotatedQuery
+    Right rewrittenQuery
+
+mtRewriteQuery :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.QueryExpr -> Pa.QueryExpr
+mtRewriteQuery spec config (Pa.Select ann selDistinct selSelectList selTref selWhere
+    selGroupBy selHaving selOrderBy selLimit selOffset selOption) =
+        let newSelectList   = mtRewriteSelectList spec config selTref selSelectList
+            newTrefs        = mtRewriteTrefList spec config selTref
+            newWhere        = mtRewriteMaybeScalarExpr spec config selTref selWhere
+            newGroupBy      = map (mtRewriteScalarExpr spec config selTref) selGroupBy
+            newHaving       = mtRewriteMaybeScalarExpr spec config selTref selHaving
+            newOrderBy      = mtRewriteDirectionList spec config selTref selOrderBy
+        in  Pa.Select ann selDistinct newSelectList newTrefs newWhere
+            newGroupBy newHaving newOrderBy selLimit selOffset selOption
+-- default case handles anything we do not handle so far
+mtRewriteQuery _ _ query = query
 
 mtGetTenantIdentifier :: MtTableName -> String
 mtGetTenantIdentifier s = head s : "_TENANT_KEY"
 
-mtRewriteSelectList :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.SelectList -> Pa.SelectList
-mtRewriteSelectList spec config tref (Pa.SelectList ann items) = Pa.SelectList ann (concatMap (mtRewriteSelectItem spec config tref) items)
+mtRewriteTrefList :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.TableRefList
+mtRewriteTrefList spec config (Pa.SubTref ann sel:trefs) = Pa.SubTref ann (mtRewriteQuery spec config sel) : mtRewriteTrefList spec config trefs
+mtRewriteTrefList spec config (Pa.TableAlias ann tb tref:trefs) = Pa.TableAlias ann tb (head (mtRewriteTrefList spec config [tref]))
+        : mtRewriteTrefList spec config trefs
+mtRewriteTrefList spec config (tref:trefs) = tref:mtRewriteTrefList spec config trefs
+mtRewriteTrefList _ _ [] = []
 
-mtRewriteSelectItem :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.SelectItem -> [Pa.SelectItem]
--- replace transformable function
--- TODO: continue here
--- default case
-mtRewriteSelectItem spec config tref item = [item]
+mtRewriteSelectList :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.SelectList -> Pa.SelectList
+mtRewriteSelectList spec config tref (Pa.SelectList ann items) = Pa.SelectList ann (mtRewriteSelectItems spec config tref items)
+
+mtRewriteSelectItems :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> [Pa.SelectItem] -> [Pa.SelectItem]
+-- default case, recursively call rewrite on single item
+mtRewriteSelectItems spec config trefs (item:items) = mtRewriteSelectItem spec config trefs item : mtRewriteSelectItems spec config trefs items
+mtRewriteSelectItems _ _ _ [] = []
+
+mtRewriteSelectItem :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.SelectItem -> Pa.SelectItem
+mtRewriteSelectItem spec config trefs (Pa.SelExp ann scalExp)             = Pa.SelExp ann (mtRewriteScalarExpr spec config trefs scalExp)
+mtRewriteSelectItem spec config trefs (Pa.SelectItem ann scalExp newName) = Pa.SelectItem ann (mtRewriteScalarExpr spec config trefs scalExp) newName
+
+mtRewriteMaybeScalarExpr :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Maybe Pa.ScalarExpr -> Maybe Pa.ScalarExpr
+mtRewriteMaybeScalarExpr spec config trefs (Just expr) = Just (mtRewriteScalarExpr spec config trefs expr)
+mtRewriteMaybeScalarExpr _ _ _ Nothing = Nothing
+
+mtRewriteDirectionList :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
+mtRewriteDirectionList spec config trefs ((expr, dir, no):list) = ((mtRewriteScalarExpr spec config trefs expr), dir, no)
+        : mtRewriteDirectionList spec config trefs list
+mtRewriteDirectionList _ _ _ [] = []
+
+mtRewriteScalarExpr :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.ScalarExpr -> Pa.ScalarExpr
+--mtRewriteScalarExpr spec config treflist (Pa.PrefixOp ann opName arg) = Pa.PrefixOp ann opName (mtRewriteScalarExpr spec config treflist arg)
+--mtRewriteScalarExpr spec config treflist (Pa.PostfixOp ann opName arg) = Pa.PostfixOp ann opName (mtRewriteScalarExpr spec config treflist arg)
+--mtRewriteScalarExpr spec config treflist (Pa.BinaryOp ann opName arg0 arg1) = Pa.BinaryOp ann opName
+--        (mtRewriteScalarExpr spec config treflist arg0) (mtRewriteScalarExpr spec config treflist arg1)
+--mtRewriteScalarExpr spec config treflist (Pa.SpecialOp ann opName args) = Pa.SpecialOp ann opName (map (mtRewriteScalarExpr spec config treflist) args)
+--mtRewriteScalarExpr spec config treflist (Pa.App ann funName args) = Pa.App ann funName (map (mtRewriteScalarExpr spec config treflist) args)
+--mtRewriteScalarExpr spec config treflist (Pa.Parens ann expr) = Pa.Parens ann (mtRewriteScalarExpr spec config treflist expr)
+--mtRewriteScalarExpr spec config treflist (Pa.InPredicate ann expr i list) = Pa.InPredicate ann (mtRewriteScalarExpr spec config treflist expr) i list
+--mtRewriteScalarExpr spec config _ (Pa.Exists ann sel) = Pa.Exists ann (mtRewriteQuery spec config sel)
+--mtRewriteScalarExpr spec config _ (Pa.ScalarSubQuery ann sel) = Pa.ScalarSubQuery ann (mtRewriteQuery spec config sel)
+--mtRewriteScalarExpr spec config (Pa.Tref _ (Pa.Name _ [Pa.Nmc tname]):trefs) (Pa.Identifier iAnn (Pa.Name a (Pa.Nmc attName:nameComps)))
+--    | not (null nameComps)  = Pa.Identifier iAnn (Pa.Name a (Pa.Nmc attName : nameComps))
+--    | otherwise             =
+--        let tableSpec = M.lookup tname spec
+--            containsAttribute (Just (FromMtSpecificTable attrMap)) aName = M.member aName attrMap 
+--            containsAttribute _ _ = False
+--            contains = containsAttribute tableSpec attName
+--            propagate False = mtRewriteScalarExpr spec trefs (Pa.Identifier iAnn (Pa.Name a [Pa.Nmc attName]))
+--            propagate True  = Pa.Identifier iAnn (Pa.Name a [Pa.Nmc tname,Pa.Nmc attName])
+--        in  propagate contains
+-- default case handles anything we do not handle so far
+mtRewriteScalarExpr _ _ _ expr = expr
 
 -- ##################################
 -- MT Annotate
@@ -126,6 +176,7 @@ mtAnnotate _ query = query
 mtAnnotateTrefList :: MtSchemaSpec -> Pa.TableRefList -> Pa.TableRefList
 mtAnnotateTrefList spec (Pa.SubTref ann sel:trefs) = Pa.SubTref ann (mtAnnotate spec sel) : mtAnnotateTrefList spec trefs
 mtAnnotateTrefList spec (Pa.TableAlias ann tb tref:trefs) = Pa.TableAlias ann tb (head (mtAnnotateTrefList spec [tref])) : mtAnnotateTrefList spec trefs
+-- default case, recursively call annotation call on single item
 mtAnnotateTrefList spec (tref:trefs) = tref:mtAnnotateTrefList spec trefs
 mtAnnotateTrefList _ [] = []
 
@@ -140,8 +191,9 @@ mtAnnotateSelectItems spec [Pa.Tref tAnn (Pa.Name nameAnn [Pa.Nmc tname])] [Pa.S
         generate _ = [Pa.SelExp selAnn (Pa.Star starAnn)]
     in mtAnnotateSelectItems spec [Pa.Tref tAnn (Pa.Name nameAnn [Pa.Nmc tname])] (generate tableSpec)
 -- default case, recursively call annotation call on single item
-mtAnnotateSelectItems _ _ [] = []
 mtAnnotateSelectItems spec trefs (item:items) = mtAnnotateSelectItem spec trefs item : mtAnnotateSelectItems spec trefs items
+mtAnnotateSelectItems _ _ [] = []
+
 mtAnnotateSelectItem :: MtSchemaSpec -> Pa.TableRefList -> Pa.SelectItem -> Pa.SelectItem
 mtAnnotateSelectItem spec trefs (Pa.SelExp ann scalExp)             = Pa.SelExp ann (mtAnnotateScalarExpr spec trefs scalExp)
 mtAnnotateSelectItem spec trefs (Pa.SelectItem ann scalExp newName) = Pa.SelectItem ann (mtAnnotateScalarExpr spec trefs scalExp) newName
