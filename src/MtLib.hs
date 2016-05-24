@@ -112,12 +112,14 @@ mtRewriteSelectItem spec config tref item = [item]
 mtAnnotate :: MtSchemaSpec -> Pa.QueryExpr -> Pa.QueryExpr
 mtAnnotate spec (Pa.Select ann selDistinct selSelectList selTref selWhere
     selGroupBy selHaving selOrderBy selLimit selOffset selOption) =
-        let newSelectList = mtAnnotateSelectList spec selTref selSelectList
-            newTrefs = mtAnnotateTrefList spec selTref
-            newWhere = mtAnnotateMaybeScalarExpr spec selTref selWhere
-            newGroupBy = map (mtAnnotateScalarExpr spec selTref) selGroupBy
+        let newSelectList   = mtAnnotateSelectList spec selTref selSelectList
+            newTrefs        = mtAnnotateTrefList spec selTref
+            newWhere        = mtAnnotateMaybeScalarExpr spec selTref selWhere
+            newGroupBy      = map (mtAnnotateScalarExpr spec selTref) selGroupBy
+            newHaving       = mtAnnotateMaybeScalarExpr spec selTref selHaving
+            newOrderBy      = mtAnnotateDirectionList spec selTref selOrderBy
         in  Pa.Select ann selDistinct newSelectList newTrefs newWhere
-            newGroupBy selHaving selOrderBy selLimit selOffset selOption
+            newGroupBy newHaving newOrderBy selLimit selOffset selOption
 -- default case handles anything we do not handle so far
 mtAnnotate _ query = query
 
@@ -147,6 +149,10 @@ mtAnnotateSelectItem spec trefs (Pa.SelectItem ann scalExp newName) = Pa.SelectI
 mtAnnotateMaybeScalarExpr :: MtSchemaSpec -> Pa.TableRefList -> Maybe Pa.ScalarExpr -> Maybe Pa.ScalarExpr
 mtAnnotateMaybeScalarExpr spec trefs (Just expr) = Just (mtAnnotateScalarExpr spec trefs expr)
 mtAnnotateMaybeScalarExpr _ _ Nothing = Nothing
+
+mtAnnotateDirectionList :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
+mtAnnotateDirectionList spec trefs ((expr, dir, no):list) = ((mtAnnotateScalarExpr spec trefs expr), dir, no) : mtAnnotateDirectionList spec trefs list
+mtAnnotateDirectionList _ _ [] = []
 
 mtAnnotateScalarExpr :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> Pa.ScalarExpr
 mtAnnotateScalarExpr spec treflist (Pa.PrefixOp ann opName arg) = Pa.PrefixOp ann opName (mtAnnotateScalarExpr spec treflist arg)
