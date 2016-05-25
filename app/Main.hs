@@ -68,8 +68,7 @@ generateTestSchema = mtSchemaSpecFromList
 main :: IO ()
 main = do
     let queries = ["SELECT * FROM SUPPLIER;"
-                   ,"SELECT DISTINCT S_NAME FROM SUPPLIER;"
-                   ,"SELECT SUPPLIER.S_NAME FROM SUPPLIER WHERE S_ACCTBAL > 42;"
+                   ,"SELECT DISTINCT S_NAME FROM SUPPLIER WHERE S_ACCTBAL > 42;"
                    ,"SELECT S.S_NAME as SUP_NAME, N.N_NAME as NAT_NAME FROM SUPPLIER S, NATION N WHERE S.S_NATIONKEY = N.N_NATIONKEY"
                    ,"SELECT max(S_ACCT) as NATIONMAX FROM (SELECT avg(S_ACCTBAL) as S_ACCT FROM SUPPLIER GROUP BY S_NATIONKEY ORDER BY S_NATIONKEY)"
                    ,"SELECT SUM(L_EXTENDEDPRICE*L_DISCOUNT) AS REVENUE FROM LINEITEM WHERE L_SHIPDATE >= '1994-01-01' AND L_SHIPDATE < dateadd(yy, 1, cast('1994-01-01' as date)) AND L_DISCOUNT BETWEEN .06 - 0.01 AND .06 + 0.01 AND L_QUANTITY < 24" -- Q6
@@ -88,11 +87,14 @@ main = do
     
     -- test parsing and rewrite
     mapM_ (\query -> do
-        putStrLn $ "\n" ++ query ++ " parses to:"
+        putStrLn "\n====================================================\n"
+        putStrLn $ query ++ " parses to:\n"
         let parsedQuery = mtParse query
         print parsedQuery
         let rewrittenQuery = mtRewrite schemaSpec (client, dataset) query
-        putStrLn $ "\n Its rewritten form is:\n  " ++ mtPrettyPrint rewrittenQuery
+        putStrLn $ "\nIts rewritten form is:\n  " ++ mtPrettyPrint rewrittenQuery
+        putStrLn "and has the following syntax tree:\n"
+        print rewrittenQuery 
         )
         queries
 
