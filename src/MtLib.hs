@@ -19,6 +19,7 @@ module MtLib
 ) where
 
 import qualified Data.Map as M
+import qualified Data.Set as S
 
 import qualified Database.HsSqlPpp.Parse as Pa
 import qualified Data.Text.Lazy as L
@@ -77,59 +78,94 @@ mtPrettyPrint (Right query) = L.unpack $ Pr.prettyQueryExpr Pr.defaultPrettyFlag
 -- MT Rewrite
 -- ##################################
 
-mtRewrite :: MtSchemaSpec -> (MtClient, MtDataSet) -> String -> MtSqlTree
-mtRewrite spec config query = do
+-- internal data types
+type TransformedSet = S.Set String -- contains the tablename:attributename strings of transformable attributes that are already in universal format
+type ClientViewSet  = S.Set String -- contains the tablename:attributename strings of transformable attributes that are already in client format
+type FilteredSet    = S.Set String -- contains the tablename strings of (intermediate) tables that have been filtered by MtDataSet already
+type Configuration  = (TransformedSet, ClientViewSet, FilteredSet)
+type Setting        = (MtClient, MtDataSet)
+
+emptyConfig :: Configuration
+emptyConfig = (S.empty, S.empty, S.empty)
+
+mtRewrite :: MtSchemaSpec -> Setting -> String -> MtSqlTree
+mtRewrite spec setting query = do
     parsedQuery <- mtParse query
     let annotatedQuery = mtAnnotate spec parsedQuery
-    let rewrittenQuery = mtRewriteQuery spec config annotatedQuery
+    let (rewrittenQuery, _) = mtRewriteQuery spec (setting, emptyConfig) annotatedQuery
     Right rewrittenQuery
 
-mtRewriteQuery :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.QueryExpr -> Pa.QueryExpr
-mtRewriteQuery spec config (Pa.Select ann selDistinct selSelectList selTref selWhere
+mtRewriteQuery :: MtSchemaSpec -> (Setting, Configuration) -> Pa.QueryExpr -> (Pa.QueryExpr, Configuration)
+mtRewriteQuery spec (setting, config) (Pa.Select ann selDistinct selSelectList selTref selWhere
     selGroupBy selHaving selOrderBy selLimit selOffset selOption) =
-        let newSelectList   = mtRewriteSelectList spec config selTref selSelectList
-            newTrefs        = mtRewriteTrefList spec config selTref
-            newWhere        = mtRewriteMaybeScalarExpr spec config selTref selWhere
-            newGroupBy      = map (mtRewriteScalarExpr spec config selTref) selGroupBy
-            newHaving       = mtRewriteMaybeScalarExpr spec config selTref selHaving
-            newOrderBy      = mtRewriteDirectionList spec config selTref selOrderBy
-        in  Pa.Select ann selDistinct newSelectList newTrefs newWhere
-            newGroupBy newHaving newOrderBy selLimit selOffset selOption
+        let (newTrefs, c1)      = mtRewriteTrefList spec (setting, config) selTref
+            (newSelectList, c2) = mtRewriteSelectList spec (setting, c1) selTref selSelectList
+            (newWhere, _)       = mtRewriteMaybeScalarExpr spec (setting, c1) selTref selWhere
+            (newHaving, _)      = mtRewriteMaybeScalarExpr spec (setting, c1) selTref selHaving
+        in  (Pa.Select ann selDistinct newSelectList newTrefs newWhere
+            selGroupBy newHaving selOrderBy selLimit selOffset selOption, c2)
 -- default case handles anything we do not handle so far
-mtRewriteQuery _ _ query = query
+mtRewriteQuery _ (setting, config) query = (query, config)
 
 mtGetTenantIdentifier :: MtTableName -> String
 mtGetTenantIdentifier s = head s : "_TENANT_KEY"
 
-mtRewriteTrefList :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.TableRefList
-mtRewriteTrefList spec config (Pa.SubTref ann sel:trefs) = Pa.SubTref ann (mtRewriteQuery spec config sel) : mtRewriteTrefList spec config trefs
-mtRewriteTrefList spec config (Pa.TableAlias ann tb tref:trefs) = Pa.TableAlias ann tb (head (mtRewriteTrefList spec config [tref]))
-        : mtRewriteTrefList spec config trefs
-mtRewriteTrefList spec config (tref:trefs) = tref:mtRewriteTrefList spec config trefs
-mtRewriteTrefList _ _ [] = []
+unify :: Configuration -> Configuration -> Configuration
+unify (t1, v1, f1) (t2, v2, f2) = (S.union t1 t2, S.union v1 v2, S.union f1 f2)
 
-mtRewriteSelectList :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.SelectList -> Pa.SelectList
-mtRewriteSelectList spec config tref (Pa.SelectList ann items) = Pa.SelectList ann (mtRewriteSelectItems spec config tref items)
+mtRewriteTrefList :: MtSchemaSpec -> (Setting, Configuration) -> Pa.TableRefList -> (Pa.TableRefList, Configuration)
+mtRewriteTrefList spec (setting, config) (Pa.SubTref ann sel:trefs) =
+    let (tref1, c1)   = mtRewriteQuery spec (setting, config) sel
+        (trefs2, c2) = mtRewriteTrefList spec (setting, config) trefs
+    in  (Pa.SubTref ann tref1 : trefs2, (unify c1 c2))
+mtRewriteTrefList spec (setting, config) (Pa.TableAlias ann tb tref:trefs) =
+    let (tref1, c1)   = mtRewriteTrefList spec (setting, config) [tref]
+        (trefs2, c2) = mtRewriteTrefList spec (setting, config) trefs
+    in  (Pa.TableAlias ann tb (head tref1) : trefs2, (unify c1 c2))
+mtRewriteTrefList spec (setting, config) (tref:trefs) = 
+    let (trefs2, c2) = mtRewriteTrefList spec (setting, config) trefs
+    in  (tref : trefs2, c2)
+mtRewriteTrefList _ (setting, config) [] = ([], config)
 
-mtRewriteSelectItems :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> [Pa.SelectItem] -> [Pa.SelectItem]
+mtRewriteSelectList :: MtSchemaSpec -> (Setting, Configuration) -> Pa.TableRefList -> Pa.SelectList -> (Pa.SelectList, Configuration)
+mtRewriteSelectList spec (setting, config) tref (Pa.SelectList ann items) =
+    let (items2, c) = mtRewriteSelectItems spec (setting, config) tref items
+    in  (Pa.SelectList ann items2, c)
+
+mtRewriteSelectItems :: MtSchemaSpec -> (Setting, Configuration) -> Pa.TableRefList -> [Pa.SelectItem] -> ([Pa.SelectItem], Configuration)
 -- default case, recursively call rewrite on single item
-mtRewriteSelectItems spec config trefs (item:items) = mtRewriteSelectItem spec config trefs item : mtRewriteSelectItems spec config trefs items
-mtRewriteSelectItems _ _ _ [] = []
+mtRewriteSelectItems spec (setting, config) trefs (item:items) =
+    let (item1, c1)  = mtRewriteSelectItem spec (setting, config) trefs item
+        (items2, c2) = mtRewriteSelectItems spec (setting, config) trefs items
+    in  (item1 : items2, (unify c1 c2))
+mtRewriteSelectItems _ (setting, config) _ [] = ([], config)
 
-mtRewriteSelectItem :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.SelectItem -> Pa.SelectItem
-mtRewriteSelectItem spec config trefs (Pa.SelExp ann scalExp)             = Pa.SelExp ann (mtRewriteScalarExpr spec config trefs scalExp)
-mtRewriteSelectItem spec config trefs (Pa.SelectItem ann scalExp newName) = Pa.SelectItem ann (mtRewriteScalarExpr spec config trefs scalExp) newName
+mtRewriteSelectItem :: MtSchemaSpec -> (Setting, Configuration) -> Pa.TableRefList -> Pa.SelectItem -> (Pa.SelectItem, Configuration)
+mtRewriteSelectItem spec (setting, config) trefs (Pa.SelExp ann scalExp) =
+    let (expr, c1) = mtRewriteScalarExpr spec (setting, config) trefs scalExp
+    in  (Pa.SelExp ann expr, c1)
+mtRewriteSelectItem spec (setting, config) trefs (Pa.SelectItem ann scalExp newName) =
+    let (expr, c1) = mtRewriteScalarExpr spec (setting, config) trefs scalExp
+    in  (Pa.SelectItem ann expr newName, c1)
 
-mtRewriteMaybeScalarExpr :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Maybe Pa.ScalarExpr -> Maybe Pa.ScalarExpr
-mtRewriteMaybeScalarExpr spec config trefs (Just expr) = Just (mtRewriteScalarExpr spec config trefs expr)
-mtRewriteMaybeScalarExpr _ _ _ Nothing = Nothing
+mtRewriteMaybeScalarExpr :: MtSchemaSpec -> (Setting, Configuration) -> Pa.TableRefList -> Maybe Pa.ScalarExpr -> (Maybe Pa.ScalarExpr, Configuration)
+mtRewriteMaybeScalarExpr spec (setting, config) trefs (Just expr) =
+    let (expr1, c1) = mtRewriteScalarExpr spec (setting, config) trefs expr
+    in  (Just expr1, c1)
+mtRewriteMaybeScalarExpr _ (setting, config) _ Nothing = (Nothing, config)
 
-mtRewriteDirectionList :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
-mtRewriteDirectionList spec config trefs ((expr, dir, no):list) = ((mtRewriteScalarExpr spec config trefs expr), dir, no)
-        : mtRewriteDirectionList spec config trefs list
-mtRewriteDirectionList _ _ _ [] = []
+-- mtRewriteDirectionList :: MtSchemaSpec
+--         -> (Setting, Configuration)
+--         -> Pa.TableRefList
+--         -> Pa.ScalarExprDirectionPairList
+--         -> (Pa.ScalarExprDirectionPairList, Configuration)
+-- mtRewriteDirectionList spec (setting, config) trefs ((expr, dir, no):list) =
+--     let (l1, c1)    = mtRewriteScalarExpr spec (setting, config) trefs expr
+--         (list2, c2) = mtRewriteDirectionList spec (setting, config) trefs list
+--     in  ((l1, dir, no) : list2, (unify c1 c2))
+-- mtRewriteDirectionList _ (setting, config) _ [] = ([], config)
 
-mtRewriteScalarExpr :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList -> Pa.ScalarExpr -> Pa.ScalarExpr
+mtRewriteScalarExpr :: MtSchemaSpec -> (Setting, Configuration) -> Pa.TableRefList -> Pa.ScalarExpr -> (Pa.ScalarExpr, Configuration)
 --mtRewriteScalarExpr spec config treflist (Pa.PrefixOp ann opName arg) = Pa.PrefixOp ann opName (mtRewriteScalarExpr spec config treflist arg)
 --mtRewriteScalarExpr spec config treflist (Pa.PostfixOp ann opName arg) = Pa.PostfixOp ann opName (mtRewriteScalarExpr spec config treflist arg)
 --mtRewriteScalarExpr spec config treflist (Pa.BinaryOp ann opName arg0 arg1) = Pa.BinaryOp ann opName
@@ -151,7 +187,7 @@ mtRewriteScalarExpr :: MtSchemaSpec -> (MtClient, MtDataSet) -> Pa.TableRefList 
 --            propagate True  = Pa.Identifier iAnn (Pa.Name a [Pa.Nmc tname,Pa.Nmc attName])
 --        in  propagate contains
 -- default case handles anything we do not handle so far
-mtRewriteScalarExpr _ _ _ expr = expr
+mtRewriteScalarExpr _ (setting, config) _ expr = (expr, config)
 
 -- ##################################
 -- MT Annotate
