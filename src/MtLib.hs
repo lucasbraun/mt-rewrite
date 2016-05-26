@@ -85,7 +85,10 @@ mtPrettyPrint (Right query) = L.unpack $ Pr.prettyQueryExpr Pr.defaultPrettyFlag
 -- the result of every subquery is presented already in client format
 -- predicates in where clauses are also presented in client format
 -- 
+-- Focuses on simplicity and correctness (including tenant keys in the write places and alike...)
 -- This design has the advantage that it is simple and that we do not have to track any intermediary state
+-- This means it is context-free and somehow self-conained... or in other words every (sub-query) is in MT format
+-- All the other things should be deferred to optimizations
 
 mtRewrite :: MtSchemaSpec -> MtSetting -> String -> MtSqlTree
 mtRewrite spec setting query = do
@@ -107,7 +110,7 @@ mtRewriteQuery spec setting (Pa.Select ann selDistinct selSelectList selTref sel
 mtRewriteQuery _ _ query = query
 
 getTenantIdentifier :: MtTableName -> String
-getTenantIdentifier s = head s : "_TENANT_KEY"
+getTenantIdentifier s = s ++ "_TENANT_KEY"
 
 mtRewriteTrefList :: MtSchemaSpec -> MtSetting -> Pa.TableRefList -> Pa.TableRefList
 mtRewriteTrefList spec setting (Pa.SubTref ann sel:trefs) = Pa.SubTref ann (mtRewriteQuery spec setting sel) : mtRewriteTrefList spec setting trefs
@@ -128,6 +131,13 @@ mtRewriteSelectItem :: MtSchemaSpec -> MtSetting -> Pa.SelectItem -> Pa.SelectIt
 mtRewriteSelectItem spec setting (Pa.SelExp ann scalExp)             = Pa.SelExp ann (mtRewriteScalarExpr spec setting scalExp)
 mtRewriteSelectItem spec setting (Pa.SelectItem ann scalExp newName) = Pa.SelectItem ann (mtRewriteScalarExpr spec setting scalExp) newName
 
+-- CONTINUE HERE...
+-- getDFilter :: MtSchemaSpec -> MtDataSet -> Pa.TableRef -> Pa.ScalarExpr
+-- getDFilter spec d tref = ...
+-- 
+-- mtRewriteWhereClause :: MtSchemaSpec -> MtSetting -> Pa.TableRefList -> Maybe Pa.ScalarExpr  -> Maybe Pa.ScalarExpr
+-- mtRewriteWhereClause spec (_,d) trefs 
+
 mtRewriteMaybeScalarExpr :: MtSchemaSpec -> MtSetting -> Maybe Pa.ScalarExpr -> Maybe Pa.ScalarExpr
 mtRewriteMaybeScalarExpr spec setting (Just expr) = Just (mtRewriteScalarExpr spec setting expr)
 mtRewriteMaybeScalarExpr _ _ Nothing = Nothing
@@ -135,7 +145,9 @@ mtRewriteMaybeScalarExpr _ _ Nothing = Nothing
 lookupAttributeComparability :: MtSchemaSpec -> Pa.Name -> (Maybe MtAttributeComparability, MtTableName)
 lookupAttributeComparability spec (Pa.Name _ nameList) =
     let (Pa.Nmc attName) = last nameList
-        (Pa.Nmc tName) = last $ init nameList
+        (Pa.Nmc tName)
+            | (length nameList) > 1   = last $ init nameList
+            | otherwise            = Pa.Nmc "NOTABLE"  
         innerLookup (Just (FromMtSpecificTable tab)) = M.lookup attName tab
         innerLookup _ = Nothing
     in  (innerLookup $ M.lookup tName spec, tName)
@@ -208,7 +220,7 @@ mtAnnotateMaybeScalarExpr spec trefs (Just expr) = Just (mtAnnotateScalarExpr sp
 mtAnnotateMaybeScalarExpr _ _ Nothing = Nothing
 
 mtAnnotateDirectionList :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
-mtAnnotateDirectionList spec trefs ((expr, dir, no):list) = ((mtAnnotateScalarExpr spec trefs expr), dir, no) : mtAnnotateDirectionList spec trefs list
+mtAnnotateDirectionList spec trefs ((expr, dir, no):list) = (mtAnnotateScalarExpr spec trefs expr, dir, no) : mtAnnotateDirectionList spec trefs list
 mtAnnotateDirectionList _ _ [] = []
 
 mtAnnotateScalarExpr :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> Pa.ScalarExpr
@@ -234,4 +246,21 @@ mtAnnotateScalarExpr spec (Pa.Tref _ (Pa.Name _ [Pa.Nmc tname]):trefs) (Pa.Ident
         in  propagate contains
 -- default case handles anything we do not handle so far
 mtAnnotateScalarExpr _ _ expr = expr
+
+-- ##################################
+-- MT Optimizer
+-- ##################################
+--
+-- Some preliminary ideas for optimizer steps
+-- Observations:
+--      - some optimizations should happen in conjunction with rewrite (i) (iv)
+--      - some optimizations need transformation provenance (iv) to (vi)
+--
+-- (i)      D=C optimization ==> only filter at the bottom level, rest of the query looks the same, no transformation needed
+-- (ii)     |D| = 1: similar to i), but additionally requires a final presentation to client view at the uppermost select
+-- (iii)    Client Presentation push-up: push-up transformation to client format to the uppermost select
+--          --> comparisons are always done in universal format, constants need to be brought into universal format as well
+-- (iv)     Transformation push-up: do comparisons in owner's format --> needs to transform constant twice --> only transform on joins or aggregations
+-- (v)      Aggregation distribution: if possible, compute partial aggregations on different client formats and then only transfrom these partial results
+-- (vi)     Statistical aggregation optimization: if (v) not possible: figure out in (intermediary) formats to transform values (essentially equivalent to join ordering and site selection in distributed query processing
 
