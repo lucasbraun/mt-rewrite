@@ -137,6 +137,12 @@ lookupAttributeComparability spec (tableName, attributeName) = do
     tSpec <- Just tableSpec
     M.lookup attName tSpec
 
+-- checks whether a string contains a certain substring
+containsString :: [Char]->[Char]->Bool
+containsString l s = containsString' l s True where
+    containsString' _ [] _          = True
+    containsString' [] _ _          = False
+    containsString' (x:xs) (y:ys) h = (y == x && containsString' xs ys False) || (h && containsString' xs (y:ys) h)
 
 mtRewriteQuery :: MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> Pa.QueryExpr
 mtRewriteQuery spec (c,ds) (Pa.Select ann selDistinct selSelectList selTref selWhere
@@ -167,12 +173,30 @@ mtRewriteSelectItems _ _ [] = []
 
 mtRewriteSelectItem :: MtSchemaSpec -> MtSetting -> Pa.SelectItem -> Pa.SelectItem
 -- todo: if outer-most scalar expr of SelExp is an transformationApp, then we have to rename it properly using a select item...
-mtRewriteSelectItem spec setting (Pa.SelExp ann scalExp)             = Pa.SelExp ann (mtRewriteScalarExpr spec setting scalExp)
+mtRewriteSelectItem spec setting (Pa.SelExp ann scalExp)             =
+    let newExp = mtRewriteScalarExpr spec setting scalExp
+        create (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
+                [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
+                    [Pa.Identifier a4 i, arg0]
+                ,Pa.NumberLit a5 arg1]) 
+                    | (containsString to "ToUniversal") && (containsString from "FromUniversal")   =
+                        let (_ , (Just attName)) = getTableAndAttName i
+                        in  Pa.SelectItem ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
+                            [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
+                                [Pa.Identifier a4 i, arg0]
+                            ,Pa.NumberLit a5 arg1]) (Pa.Nmc attName)
+                    | otherwise                                                         =
+                        Pa.SelExp ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
+                            [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
+                                [Pa.Identifier a4 i, arg0]
+                            ,Pa.NumberLit a5 arg1])
+        create expr                                                                     = Pa.SelExp ann expr
+    in create newExp
 mtRewriteSelectItem spec setting (Pa.SelectItem ann scalExp newName) = Pa.SelectItem ann (mtRewriteScalarExpr spec setting scalExp) newName
 
 -- adds a dataset filter for a specific table to an existing where predicate
-addDFilter :: MtSchemaSpec -> MtDataSet -> Pa.TableRef -> Maybe Pa.ScalarExpr -> Maybe MtTableName -> Maybe Pa.ScalarExpr
 -- only adds filter for tables that are tenant-specific
+addDFilter :: MtSchemaSpec -> MtDataSet -> Pa.TableRef -> Maybe Pa.ScalarExpr -> Maybe MtTableName -> Maybe Pa.ScalarExpr
 addDFilter spec ds (Pa.Tref _ (Pa.Name nAnn nameList)) whereClause priorName =
     let (Pa.Nmc tName)      = last nameList
         isGlobal            = isGlobalTable spec tName
