@@ -23,6 +23,7 @@ import qualified Data.Map as M
 -- import qualified Data.Set as S
 
 import qualified Database.HsSqlPpp.Parse as Pa
+import qualified Database.HsSqlPpp.Annotation as A
 import qualified Data.Text.Lazy as L
 import qualified Database.HsSqlPpp.Pretty as Pr
 
@@ -97,20 +98,57 @@ mtRewrite spec setting query = do
     let rewrittenQuery = mtRewriteQuery spec setting annotatedQuery
     Right rewrittenQuery
 
+-- helper types and functions
+type TableAttributePair = (Maybe MtTableName, Maybe MtAttributeName)
+
+getTenantAttributeName :: MtTableName -> MtAttributeName
+getTenantAttributeName s = s ++ "_TENANT_KEY"
+
+-- takes a (alias of a) table name and an mt table name and constructs the corresponding identifier
+getTenantIdentifier :: String -> MtTableName -> Pa.ScalarExpr
+getTenantIdentifier tName mtName = Pa.Identifier A.emptyAnnotation $ Pa.Name A.emptyAnnotation [Pa.Nmc tName, Pa.Nmc $ getTenantAttributeName mtName]
+
+isGlobalTable :: MtSchemaSpec -> MtTableName -> Bool
+isGlobalTable spec tName =
+    let tableSpec = M.lookup tName spec
+        analyse (Just MtGlobalTable)    = True
+        analyse _                       = False
+    in analyse tableSpec
+
+-- returns a pair (table-name, attribute-name) where both can be nothing
+getTableAndAttName :: Pa.Name -> TableAttributePair
+getTableAndAttName (Pa.Name _ nameList) =
+    let (Pa.Nmc attName) = last nameList
+        (Pa.Nmc tName)
+            | length nameList > 1   = last $ init nameList
+            | otherwise             = Pa.Nmc ""  
+        tableName
+            | not (null tName)  = Just tName
+            | otherwise         = Nothing 
+    in  (tableName, Just attName)
+getTableAndAttName (Pa.AntiName _) = (Nothing, Nothing)
+
+-- returns the attribute comparability for a specific attribute if it is part of a tenant-specific table
+lookupAttributeComparability :: MtSchemaSpec -> TableAttributePair -> Maybe MtAttributeComparability
+lookupAttributeComparability spec (tableName, attributeName) = do
+    attName <- attributeName
+    tName <- tableName
+    (FromMtSpecificTable tableSpec) <- M.lookup tName spec
+    tSpec <- Just tableSpec
+    M.lookup attName tSpec
+
+
 mtRewriteQuery :: MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> Pa.QueryExpr
-mtRewriteQuery spec setting (Pa.Select ann selDistinct selSelectList selTref selWhere
+mtRewriteQuery spec (c,ds) (Pa.Select ann selDistinct selSelectList selTref selWhere
     selGroupBy selHaving selOrderBy selLimit selOffset selOption) =
-        let newTrefs      = mtRewriteTrefList spec setting selTref
-            newSelectList = mtRewriteSelectList spec setting selSelectList
-            newWhere      = mtRewriteMaybeScalarExpr spec setting selWhere
-            newHaving     = mtRewriteMaybeScalarExpr spec setting selHaving
+        let newTrefs      = mtRewriteTrefList spec (c,ds) selTref
+            newSelectList = mtRewriteSelectList spec (c,ds) selSelectList
+            newWhere      = mtFilterWhereClause spec ds selTref (mtRewriteMaybeScalarExpr spec (c,ds) selWhere)
+            newHaving     = mtRewriteMaybeScalarExpr spec (c,ds) selHaving
         in  Pa.Select ann selDistinct newSelectList newTrefs newWhere
             selGroupBy newHaving selOrderBy selLimit selOffset selOption
 -- default case handles anything we do not handle so far
 mtRewriteQuery _ _ query = query
-
-getTenantIdentifier :: MtTableName -> String
-getTenantIdentifier s = s ++ "_TENANT_KEY"
 
 mtRewriteTrefList :: MtSchemaSpec -> MtSetting -> Pa.TableRefList -> Pa.TableRefList
 mtRewriteTrefList spec setting (Pa.SubTref ann sel:trefs) = Pa.SubTref ann (mtRewriteQuery spec setting sel) : mtRewriteTrefList spec setting trefs
@@ -128,30 +166,40 @@ mtRewriteSelectItems spec setting (item:items) = mtRewriteSelectItem spec settin
 mtRewriteSelectItems _ _ [] = []
 
 mtRewriteSelectItem :: MtSchemaSpec -> MtSetting -> Pa.SelectItem -> Pa.SelectItem
+-- todo: if outer-most scalar expr of SelExp is an transformationApp, then we have to rename it properly using a select item...
 mtRewriteSelectItem spec setting (Pa.SelExp ann scalExp)             = Pa.SelExp ann (mtRewriteScalarExpr spec setting scalExp)
 mtRewriteSelectItem spec setting (Pa.SelectItem ann scalExp newName) = Pa.SelectItem ann (mtRewriteScalarExpr spec setting scalExp) newName
 
--- CONTINUE HERE...
--- getDFilter :: MtSchemaSpec -> MtDataSet -> Pa.TableRef -> Pa.ScalarExpr
--- getDFilter spec d tref = ...
--- 
--- mtRewriteWhereClause :: MtSchemaSpec -> MtSetting -> Pa.TableRefList -> Maybe Pa.ScalarExpr  -> Maybe Pa.ScalarExpr
--- mtRewriteWhereClause spec (_,d) trefs 
+-- adds a dataset filter for a specific table to an existing where predicate
+addDFilter :: MtSchemaSpec -> MtDataSet -> Pa.TableRef -> Maybe Pa.ScalarExpr -> Maybe MtTableName -> Maybe Pa.ScalarExpr
+-- only adds filter for tables that are tenant-specific
+addDFilter spec ds (Pa.Tref _ (Pa.Name nAnn nameList)) whereClause priorName =
+    let (Pa.Nmc tName)      = last nameList
+        isGlobal            = isGlobalTable spec tName
+        newName (Just n)    = n
+        newName Nothing     = tName
+        inPred
+            | isGlobal                  = Nothing
+            | otherwise                 = Just $ Pa.InPredicate nAnn (getTenantIdentifier (newName priorName) tName) True
+                                            (Pa.InList A.emptyAnnotation (map (Pa.NumberLit A.emptyAnnotation . show) ds))
+        addTo (Just expr) (Just pr)     = Just $ Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "and"]) expr pr
+        addTo Nothing (Just pr)         = Just pr
+        addTo (Just expr) Nothing       = Just expr
+        addTo Nothing Nothing           = Nothing
+    in addTo whereClause inPred
+addDFilter spec ds (Pa.TableAlias _ (Pa.Nmc newName) tref) whereClause priorName =
+    let finalName (Just n)  = n
+        finalName Nothing   = newName
+    in  addDFilter spec ds tref whereClause (Just $ finalName priorName)
+addDFilter _ _ _ whereClause _ = whereClause
+
+mtFilterWhereClause :: MtSchemaSpec -> MtDataSet -> Pa.TableRefList -> Maybe Pa.ScalarExpr  -> Maybe Pa.ScalarExpr
+mtFilterWhereClause spec ds (tref:trefs) whereClause = mtFilterWhereClause spec ds trefs (addDFilter spec ds tref whereClause Nothing)
+mtFilterWhereClause _ _ [] whereClause = whereClause
 
 mtRewriteMaybeScalarExpr :: MtSchemaSpec -> MtSetting -> Maybe Pa.ScalarExpr -> Maybe Pa.ScalarExpr
 mtRewriteMaybeScalarExpr spec setting (Just expr) = Just (mtRewriteScalarExpr spec setting expr)
 mtRewriteMaybeScalarExpr _ _ Nothing = Nothing
-
-lookupAttributeComparability :: MtSchemaSpec -> Pa.Name -> (Maybe MtAttributeComparability, MtTableName)
-lookupAttributeComparability spec (Pa.Name _ nameList) =
-    let (Pa.Nmc attName) = last nameList
-        (Pa.Nmc tName)
-            | (length nameList) > 1   = last $ init nameList
-            | otherwise            = Pa.Nmc "NOTABLE"  
-        innerLookup (Just (FromMtSpecificTable tab)) = M.lookup attName tab
-        innerLookup _ = Nothing
-    in  (innerLookup $ M.lookup tName spec, tName)
-lookupAttributeComparability _ (Pa.AntiName _) = (Nothing, "NOTABLE")
 
 mtRewriteScalarExpr :: MtSchemaSpec -> MtSetting -> Pa.ScalarExpr -> Pa.ScalarExpr
 mtRewriteScalarExpr spec setting (Pa.PrefixOp ann opName arg) = Pa.PrefixOp ann opName (mtRewriteScalarExpr spec setting arg)
@@ -165,9 +213,15 @@ mtRewriteScalarExpr spec setting (Pa.InPredicate ann expr i list) = Pa.InPredica
 mtRewriteScalarExpr spec setting (Pa.Exists ann sel) = Pa.Exists ann (mtRewriteQuery spec setting sel)
 mtRewriteScalarExpr spec setting (Pa.ScalarSubQuery ann sel) = Pa.ScalarSubQuery ann (mtRewriteQuery spec setting sel)
 mtRewriteScalarExpr spec (c,_) (Pa.Identifier iAnn i) =
-    let rewrite (Just (MtTransformable to from), tName) = Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from]) [Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to]) [Pa.Identifier iAnn i, Pa.Identifier iAnn (Pa.Name iAnn [Pa.Nmc tName, Pa.Nmc (getTenantIdentifier tName)])], Pa.NumberLit iAnn (show c)]
-        rewrite _ = Pa.Identifier iAnn i
-    in  rewrite $ lookupAttributeComparability spec i
+    let (tableName, attName) = getTableAndAttName i
+        comparability = lookupAttributeComparability spec (tableName, attName)
+        rewrite (Just (MtTransformable to from)) (Just tName) =
+            Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])
+                [Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to])
+                    [Pa.Identifier iAnn i, getTenantIdentifier tName tName]
+                ,Pa.NumberLit iAnn (show c)]
+        rewrite _ _ = Pa.Identifier iAnn i
+    in  rewrite comparability tableName 
 mtRewriteScalarExpr _ _ expr = expr
 
 -- ##################################
