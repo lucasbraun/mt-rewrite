@@ -138,26 +138,28 @@ lookupAttributeComparability spec (tableName, attributeName) = do
     M.lookup attName tSpec
 
 -- checks whether a string contains a certain substring
-containsString :: [Char]->[Char]->Bool
+containsString :: String -> String ->Bool
 containsString l s = containsString' l s True where
     containsString' _ [] _          = True
     containsString' [] _ _          = False
     containsString' (x:xs) (y:ys) h = (y == x && containsString' xs ys False) || (h && containsString' xs (y:ys) h)
 
+-- the main rewrite functions
 mtRewriteQuery :: MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> MtSqlTree
 mtRewriteQuery spec (c,ds) (Pa.Select ann selDistinct selSelectList selTref selWhere
     selGroupBy selHaving selOrderBy selLimit selOffset selOption) = do
         newTrefs         <- mtRewriteTrefList spec (c,ds) selTref
         newSelectList    <- mtRewriteSelectList spec (c,ds) selSelectList
         newWhere         <- mtRewriteMaybeScalarExpr spec (c,ds) selWhere
-        let filteredWhere = mtFilterWhereClause spec ds selTref newWhere
+        adjustedWhere    <- mtAdjustWhereClause spec newWhere
+        let filteredWhere = mtFilterWhereClause spec ds selTref adjustedWhere
         let newGroupBy    = mtRewriteGroupByClause spec selGroupBy
         newHaving        <- mtRewriteMaybeScalarExpr spec (c,ds) selHaving
         let newOrderBy    = mtRewriteOrderByClause spec selOrderBy
         Right $ Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
             newGroupBy newHaving newOrderBy selLimit selOffset selOption
 -- default case handles anything we do not handle so far
-mtRewriteQuery _ _ query = Right $ query
+mtRewriteQuery _ _ query = Right query
 
 mtRewriteTrefList :: MtSchemaSpec -> MtSetting -> Pa.TableRefList -> Either Pa.ParseErrorExtra Pa.TableRefList
 mtRewriteTrefList spec setting (Pa.SubTref ann sel:trefs) = do
@@ -194,8 +196,7 @@ mtRewriteSelectItem spec setting (Pa.SelExp ann scalExp)             = do
                 [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
                     [Pa.Identifier a4 i, arg0]
                 ,Pa.NumberLit a5 arg1]) 
-                    | (containsString to "ToUniversal") && (containsString from "FromUniversal")   =
-                        let (_ , (Just attName)) = getTableAndAttName i
+                    | containsString to "ToUniversal" && containsString from "FromUniversal"   = let (_ , Just attName) = getTableAndAttName i
                         in  Pa.SelectItem ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
                             [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
                                 [Pa.Identifier a4 i, arg0]
@@ -234,13 +235,58 @@ addDFilter spec ds (Pa.TableAlias _ (Pa.Nmc newName) tref) whereClause priorName
     in  addDFilter spec ds tref whereClause (Just $ finalName priorName)
 addDFilter _ _ _ whereClause _ = whereClause
 
+-- checks the join predicates and adds necessary constraints as necessary
+-- right now only checks simple (non-nested and non-complex) join predicates
+mtAdjustWhereClause :: MtSchemaSpec -> Maybe Pa.ScalarExpr -> Either Pa.ParseErrorExtra (Maybe Pa.ScalarExpr)
+mtAdjustWhereClause spec (Just whereClause) = do
+    adjustedExp <- mtAdjustScalarExpr spec whereClause
+    Right $ Just adjustedExp
+mtAdjustWhereClause _ whereClause = Right whereClause
+
+-- adds tenant identifier for mt-specific predicates
+mtAdjustJoinPredicate :: MtTableName -> MtTableName -> String -> Pa.ScalarExpr -> Pa.ScalarExpr
+mtAdjustJoinPredicate t0 t1 opName expr
+    | opName == "<>"    = Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "or"])
+                            (Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "<>"])
+                                (getTenantIdentifier t0 t0) (getTenantIdentifier t1 t1)) expr
+    | otherwise         = Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "and"])
+                            (Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "="])
+                                (getTenantIdentifier t0 t0) (getTenantIdentifier t1 t1)) expr
+
+
+-- todo: continue here... remember that the entire where clause is one scalar expr, so indeed binary ops have to propagate!!
+mtAdjustScalarExpr :: MtSchemaSpec -> Pa.ScalarExpr -> Either Pa.ParseErrorExtra Pa.ScalarExpr
+mtAdjustScalarExpr spec (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1)) =
+    let checkNecessary  = opName `elem` ["=", "<>", "<", ">", ">=", "<="]
+        (t0, a0)        = getTableAndAttName n0
+        comp0           = lookupAttributeComparability spec (t0, a0)
+        (t1, a1)        = getTableAndAttName n1
+        comp1           = lookupAttributeComparability spec (t1, a1)
+        -- if both are specific, check if they are from same table
+        adjust True (Just tn0) (Just MtSpecific) (Just tn1) (Just MtSpecific)
+            | tn0 == tn1    = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1)
+            | otherwise     = Right $ mtAdjustJoinPredicate tn0 tn1 opName
+                                (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1))
+        adjust True _ (Just MtSpecific) _ (Just MtSpecific) = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1) -- add parse error here later
+
+        adjust True _ (Just MtSpecific) _ _ = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1) -- add parse error here later
+        adjust True _ _ _ (Just MtSpecific) = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1) -- add parse error here later
+        adjust _ _ _ _ _ = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1) -- add parse error here later
+    in adjust checkNecessary t0 comp0 t1 comp1
+
+mtAdjustScalarExpr spec (Pa.PrefixOp ann opName arg) = do
+    h <- mtAdjustScalarExpr spec arg
+    Right $ Pa.PrefixOp ann opName h
+mtAdjustScalarExpr _ expr = Right expr
+
+-- adds the necessary dataset filter to a where clause
 mtFilterWhereClause :: MtSchemaSpec -> MtDataSet -> Pa.TableRefList -> Maybe Pa.ScalarExpr  -> Maybe Pa.ScalarExpr
 mtFilterWhereClause spec ds (tref:trefs) whereClause = mtFilterWhereClause spec ds trefs (addDFilter spec ds tref whereClause Nothing)
 mtFilterWhereClause _ _ [] whereClause = whereClause
 
 -- ommmits the table name of an attribute if necessary, this is actually the case for transformable attributre in group- and order-by clauses
 omitIfNecessary :: MtSchemaSpec -> Pa.ScalarExpr -> Pa.ScalarExpr
-omitIfNecessary spec (Pa.Identifier iAnn (name)) =
+omitIfNecessary spec (Pa.Identifier iAnn name) =
     let (tName, attName) = getTableAndAttName name
         comp = lookupAttributeComparability spec (tName, attName)
         (Just aName) = attName
@@ -250,7 +296,7 @@ omitIfNecessary spec (Pa.Identifier iAnn (name)) =
 omitIfNecessary _ expr = expr
 
 mtRewriteGroupByClause :: MtSchemaSpec -> [Pa.ScalarExpr] -> [Pa.ScalarExpr]
-mtRewriteGroupByClause spec exprs = map (omitIfNecessary spec) exprs
+mtRewriteGroupByClause spec = map (omitIfNecessary spec)
 
 mtRewriteOrderByClause :: MtSchemaSpec -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
 mtRewriteOrderByClause spec ((expr, dir, no):list) = (omitIfNecessary spec expr, dir, no) : mtRewriteOrderByClause spec list
@@ -260,7 +306,7 @@ mtRewriteMaybeScalarExpr :: MtSchemaSpec -> MtSetting -> Maybe Pa.ScalarExpr -> 
 mtRewriteMaybeScalarExpr spec setting (Just expr) = do
     h <- mtRewriteScalarExpr spec setting expr
     Right $ Just h
-mtRewriteMaybeScalarExpr _ _ Nothing = Right $ Nothing
+mtRewriteMaybeScalarExpr _ _ Nothing = Right Nothing
 
 mtRewriteScalarExprList :: MtSchemaSpec -> MtSetting -> [Pa.ScalarExpr] -> Either Pa.ParseErrorExtra [Pa.ScalarExpr]
 mtRewriteScalarExprList spec setting (arg:args) = do
