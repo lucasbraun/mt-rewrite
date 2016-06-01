@@ -115,6 +115,19 @@ isGlobalTable spec tName =
         analyse _                       = False
     in analyse tableSpec
 
+-- returns old name (name before renaming) for a specific table name given the tref list
+getOldTableName :: Maybe MtTableName -> Pa.TableRefList -> Maybe MtTableName
+-- todo: continue here
+getOldTableName (Just tableName) (Pa.TableAlias _ (Pa.Nmc aliasName) (Pa.Tref _ (Pa.Name _ [Pa.Nmc tName])):trefs)
+    | tableName == aliasName    = Just tName
+    | otherwise                 = getOldTableName (Just tableName) trefs
+getOldTableName (Just tableName) (Pa.Tref _ (Pa.Name _ [Pa.Nmc tName]):trefs)
+    | tableName == tName    = Just tName
+    | otherwise             = getOldTableName (Just tableName) trefs
+getOldTableName (Just tableName) (_:trefs) = getOldTableName (Just tableName) trefs
+getOldTableName _ [] = Nothing
+getOldTableName Nothing _ = Nothing
+
 -- returns a pair (table-name, attribute-name) where both can be nothing
 getTableAndAttName :: Pa.Name -> TableAttributePair
 getTableAndAttName (Pa.Name _ nameList) =
@@ -129,10 +142,11 @@ getTableAndAttName (Pa.Name _ nameList) =
 getTableAndAttName (Pa.AntiName _) = (Nothing, Nothing)
 
 -- returns the attribute comparability for a specific attribute if it is part of a tenant-specific table
-lookupAttributeComparability :: MtSchemaSpec -> TableAttributePair -> Maybe MtAttributeComparability
-lookupAttributeComparability spec (tableName, attributeName) = do
+lookupAttributeComparability :: MtSchemaSpec -> TableAttributePair -> Pa.TableRefList -> Maybe MtAttributeComparability
+lookupAttributeComparability spec (tableName, attributeName) trefs = do
     attName <- attributeName
-    tName <- tableName
+    let oldTName = getOldTableName tableName trefs
+    tName <- oldTName
     (FromMtSpecificTable tableSpec) <- M.lookup tName spec
     tSpec <- Just tableSpec
     M.lookup attName tSpec
@@ -149,13 +163,13 @@ mtRewriteQuery :: MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> MtSqlTree
 mtRewriteQuery spec (c,ds) (Pa.Select ann selDistinct selSelectList selTref selWhere
     selGroupBy selHaving selOrderBy selLimit selOffset selOption) = do
         newTrefs         <- mtRewriteTrefList spec (c,ds) selTref
-        newSelectList    <- mtRewriteSelectList spec (c,ds) selSelectList
-        newWhere         <- mtRewriteMaybeScalarExpr spec (c,ds) selWhere
-        adjustedWhere    <- mtAdjustWhereClause spec newWhere
+        newSelectList    <- mtRewriteSelectList spec (c,ds) selSelectList selTref
+        newWhere         <- mtRewriteMaybeScalarExpr spec (c,ds) selWhere selTref
+        adjustedWhere    <- mtAdjustWhereClause spec newWhere selTref
         let filteredWhere = mtFilterWhereClause spec ds selTref adjustedWhere
-        let newGroupBy    = mtRewriteGroupByClause spec selGroupBy
-        newHaving        <- mtRewriteMaybeScalarExpr spec (c,ds) selHaving
-        let newOrderBy    = mtRewriteOrderByClause spec selOrderBy
+        let newGroupBy    = mtRewriteGroupByClause spec selTref selGroupBy
+        newHaving        <- mtRewriteMaybeScalarExpr spec (c,ds) selHaving selTref
+        let newOrderBy    = mtRewriteOrderByClause spec selTref selOrderBy
         Right $ Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
             newGroupBy newHaving newOrderBy selLimit selOffset selOption
 -- default case handles anything we do not handle so far
@@ -175,23 +189,22 @@ mtRewriteTrefList spec setting (tref:trefs) = do
     Right $ tref : t
 mtRewriteTrefList _ _ [] = Right []
 
-mtRewriteSelectList :: MtSchemaSpec -> MtSetting -> Pa.SelectList -> Either Pa.ParseErrorExtra Pa.SelectList
-mtRewriteSelectList spec setting (Pa.SelectList ann items) = do
-    t <- mtRewriteSelectItems spec setting items
+mtRewriteSelectList :: MtSchemaSpec -> MtSetting -> Pa.SelectList -> Pa.TableRefList -> Either Pa.ParseErrorExtra Pa.SelectList
+mtRewriteSelectList spec setting (Pa.SelectList ann items) trefs = do
+    t <- mtRewriteSelectItems spec setting items trefs
     Right $ Pa.SelectList ann t
 
-mtRewriteSelectItems :: MtSchemaSpec -> MtSetting -> [Pa.SelectItem] -> Either Pa.ParseErrorExtra [Pa.SelectItem]
+mtRewriteSelectItems :: MtSchemaSpec -> MtSetting -> [Pa.SelectItem] -> Pa.TableRefList -> Either Pa.ParseErrorExtra [Pa.SelectItem]
 -- default case, recursively call rewrite on single item
-mtRewriteSelectItems spec setting (item:items) = do
-    h <- mtRewriteSelectItem spec setting item
-    t <- mtRewriteSelectItems spec setting items
+mtRewriteSelectItems spec setting (item:items) trefs = do
+    h <- mtRewriteSelectItem spec setting item trefs
+    t <- mtRewriteSelectItems spec setting items trefs
     Right $ h : t
-mtRewriteSelectItems _ _ [] = Right []
+mtRewriteSelectItems _ _ [] _ = Right []
 
-mtRewriteSelectItem :: MtSchemaSpec -> MtSetting -> Pa.SelectItem -> Either Pa.ParseErrorExtra Pa.SelectItem
--- todo: if outer-most scalar expr of SelExp is an transformationApp, then we have to rename it properly using a select item...
-mtRewriteSelectItem spec setting (Pa.SelExp ann scalExp)             = do
-    newExp <- mtRewriteScalarExpr spec setting scalExp
+mtRewriteSelectItem :: MtSchemaSpec -> MtSetting -> Pa.SelectItem -> Pa.TableRefList -> Either Pa.ParseErrorExtra Pa.SelectItem
+mtRewriteSelectItem spec setting (Pa.SelExp ann scalExp) trefs = do
+    newExp <- mtRewriteScalarExpr spec setting scalExp trefs
     let create (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
                 [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
                     [Pa.Identifier a4 i, arg0]
@@ -208,8 +221,8 @@ mtRewriteSelectItem spec setting (Pa.SelExp ann scalExp)             = do
                             ,Pa.NumberLit a5 arg1])
         create expr                                                                     = Pa.SelExp ann expr
     Right $ create newExp
-mtRewriteSelectItem spec setting (Pa.SelectItem ann scalExp newName) = do
-    h <- mtRewriteScalarExpr spec setting scalExp
+mtRewriteSelectItem spec setting (Pa.SelectItem ann scalExp newName) trefs = do
+    h <- mtRewriteScalarExpr spec setting scalExp trefs
     Right $ Pa.SelectItem ann h newName
 
 -- adds a dataset filter for a specific table to an existing where predicate
@@ -237,11 +250,11 @@ addDFilter _ _ _ whereClause _ = whereClause
 
 -- checks the join predicates and adds necessary constraints as necessary
 -- right now only checks simple (non-nested and non-complex) join predicates
-mtAdjustWhereClause :: MtSchemaSpec -> Maybe Pa.ScalarExpr -> Either Pa.ParseErrorExtra (Maybe Pa.ScalarExpr)
-mtAdjustWhereClause spec (Just whereClause) = do
-    adjustedExp <- mtAdjustScalarExpr spec whereClause
+mtAdjustWhereClause :: MtSchemaSpec -> Maybe Pa.ScalarExpr -> Pa.TableRefList-> Either Pa.ParseErrorExtra (Maybe Pa.ScalarExpr)
+mtAdjustWhereClause spec (Just whereClause) trefs = do
+    adjustedExp <- mtAdjustScalarExpr spec whereClause trefs
     Right $ Just adjustedExp
-mtAdjustWhereClause _ whereClause = Right whereClause
+mtAdjustWhereClause _ whereClause _ = Right whereClause
 
 -- adds tenant identifier for mt-specific predicates
 mtAdjustJoinPredicate :: MtTableName -> MtTableName -> String -> Pa.ScalarExpr -> Pa.ScalarExpr
@@ -254,13 +267,13 @@ mtAdjustJoinPredicate t0 t1 opName expr
                                 (getTenantIdentifier t0 t0) (getTenantIdentifier t1 t1)) expr
 
 
-mtAdjustScalarExpr :: MtSchemaSpec -> Pa.ScalarExpr -> Either Pa.ParseErrorExtra Pa.ScalarExpr
-mtAdjustScalarExpr spec (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1)) =
+mtAdjustScalarExpr :: MtSchemaSpec -> Pa.ScalarExpr -> Pa.TableRefList-> Either Pa.ParseErrorExtra Pa.ScalarExpr
+mtAdjustScalarExpr spec (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1)) trefs =
     let checkNecessary  = opName `elem` ["=", "<>", "<", ">", ">=", "<="]
         (t0, a0)        = getTableAndAttName n0
-        comp0           = lookupAttributeComparability spec (t0, a0)
+        comp0           = lookupAttributeComparability spec (t0, a0) trefs
         (t1, a1)        = getTableAndAttName n1
-        comp1           = lookupAttributeComparability spec (t1, a1)
+        comp1           = lookupAttributeComparability spec (t1, a1) trefs
         -- if both are specific, check if they are from same table
         adjust True (Just tn0) (Just MtSpecific) (Just tn1) (Just MtSpecific)
             | tn0 == tn1    = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1)
@@ -272,14 +285,14 @@ mtAdjustScalarExpr spec (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Iden
         adjust True _ _ _ (Just MtSpecific) = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1) -- add parse error here later
         adjust _ _ _ _ _ = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1) -- add parse error here later
     in adjust checkNecessary t0 comp0 t1 comp1
-mtAdjustScalarExpr spec (Pa.BinaryOp ann i arg0 arg1) = do
-    h <- mtAdjustScalarExpr spec arg0
-    t <- mtAdjustScalarExpr spec arg1
+mtAdjustScalarExpr spec (Pa.BinaryOp ann i arg0 arg1) trefs = do
+    h <- mtAdjustScalarExpr spec arg0 trefs
+    t <- mtAdjustScalarExpr spec arg1 trefs
     Right $ Pa.BinaryOp ann i h t
-mtAdjustScalarExpr spec (Pa.PrefixOp ann opName arg) = do
-    h <- mtAdjustScalarExpr spec arg
+mtAdjustScalarExpr spec (Pa.PrefixOp ann opName arg) trefs= do
+    h <- mtAdjustScalarExpr spec arg trefs
     Right $ Pa.PrefixOp ann opName h
-mtAdjustScalarExpr _ expr = Right expr
+mtAdjustScalarExpr _ expr _ = Right expr
 
 -- adds the necessary dataset filter to a where clause
 mtFilterWhereClause :: MtSchemaSpec -> MtDataSet -> Pa.TableRefList -> Maybe Pa.ScalarExpr  -> Maybe Pa.ScalarExpr
@@ -287,68 +300,68 @@ mtFilterWhereClause spec ds (tref:trefs) whereClause = mtFilterWhereClause spec 
 mtFilterWhereClause _ _ [] whereClause = whereClause
 
 -- ommmits the table name of an attribute if necessary, this is actually the case for transformable attributre in group- and order-by clauses
-omitIfNecessary :: MtSchemaSpec -> Pa.ScalarExpr -> Pa.ScalarExpr
-omitIfNecessary spec (Pa.Identifier iAnn name) =
+omitIfNecessary :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> Pa.ScalarExpr
+omitIfNecessary spec trefs (Pa.Identifier iAnn name) =
     let (tName, attName) = getTableAndAttName name
-        comp = lookupAttributeComparability spec (tName, attName)
+        comp = lookupAttributeComparability spec (tName, attName) trefs
         (Just aName) = attName
         applyIf (Just (MtTransformable _ _)) = Pa.Name A.emptyAnnotation [Pa.Nmc aName]
         applyIf _ = name
     in Pa.Identifier iAnn (applyIf comp)
-omitIfNecessary _ expr = expr
+omitIfNecessary _ _ expr = expr
 
-mtRewriteGroupByClause :: MtSchemaSpec -> [Pa.ScalarExpr] -> [Pa.ScalarExpr]
-mtRewriteGroupByClause spec = map (omitIfNecessary spec)
+mtRewriteGroupByClause :: MtSchemaSpec -> Pa.TableRefList -> [Pa.ScalarExpr] -> [Pa.ScalarExpr]
+mtRewriteGroupByClause spec trefs = map (omitIfNecessary spec trefs)
 
-mtRewriteOrderByClause :: MtSchemaSpec -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
-mtRewriteOrderByClause spec ((expr, dir, no):list) = (omitIfNecessary spec expr, dir, no) : mtRewriteOrderByClause spec list
-mtRewriteOrderByClause _ [] = []
+mtRewriteOrderByClause :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
+mtRewriteOrderByClause spec trefs ((expr, dir, no):list) = (omitIfNecessary spec trefs expr, dir, no) : mtRewriteOrderByClause spec trefs list
+mtRewriteOrderByClause _ _ [] = []
 
-mtRewriteMaybeScalarExpr :: MtSchemaSpec -> MtSetting -> Maybe Pa.ScalarExpr -> Either Pa.ParseErrorExtra (Maybe Pa.ScalarExpr)
-mtRewriteMaybeScalarExpr spec setting (Just expr) = do
-    h <- mtRewriteScalarExpr spec setting expr
+mtRewriteMaybeScalarExpr :: MtSchemaSpec -> MtSetting -> Maybe Pa.ScalarExpr -> Pa.TableRefList -> Either Pa.ParseErrorExtra (Maybe Pa.ScalarExpr)
+mtRewriteMaybeScalarExpr spec setting (Just expr) trefs = do
+    h <- mtRewriteScalarExpr spec setting expr trefs
     Right $ Just h
-mtRewriteMaybeScalarExpr _ _ Nothing = Right Nothing
+mtRewriteMaybeScalarExpr _ _ Nothing _ = Right Nothing
 
-mtRewriteScalarExprList :: MtSchemaSpec -> MtSetting -> [Pa.ScalarExpr] -> Either Pa.ParseErrorExtra [Pa.ScalarExpr]
-mtRewriteScalarExprList spec setting (arg:args) = do
-    newArg <- mtRewriteScalarExpr spec setting arg
-    newArgs <- mtRewriteScalarExprList spec setting args
+mtRewriteScalarExprList :: MtSchemaSpec -> MtSetting -> [Pa.ScalarExpr] -> Pa.TableRefList -> Either Pa.ParseErrorExtra [Pa.ScalarExpr]
+mtRewriteScalarExprList spec setting (arg:args) trefs = do
+    newArg <- mtRewriteScalarExpr spec setting arg trefs
+    newArgs <- mtRewriteScalarExprList spec setting args trefs
     Right (newArg : newArgs)
-mtRewriteScalarExprList _ _ [] = Right []
+mtRewriteScalarExprList _ _ [] _ = Right []
 
-mtRewriteScalarExpr :: MtSchemaSpec -> MtSetting -> Pa.ScalarExpr -> Either Pa.ParseErrorExtra Pa.ScalarExpr
-mtRewriteScalarExpr spec setting (Pa.PrefixOp ann opName arg) = do
-    h <- mtRewriteScalarExpr spec setting arg
+mtRewriteScalarExpr :: MtSchemaSpec -> MtSetting -> Pa.ScalarExpr -> Pa.TableRefList -> Either Pa.ParseErrorExtra Pa.ScalarExpr
+mtRewriteScalarExpr spec setting (Pa.PrefixOp ann opName arg) trefs = do
+    h <- mtRewriteScalarExpr spec setting arg trefs
     Right $ Pa.PrefixOp ann opName h
-mtRewriteScalarExpr spec setting (Pa.PostfixOp ann opName arg) = do
-    h <- mtRewriteScalarExpr spec setting arg
+mtRewriteScalarExpr spec setting (Pa.PostfixOp ann opName arg) trefs = do
+    h <- mtRewriteScalarExpr spec setting arg trefs
     Right $ Pa.PostfixOp ann opName h
-mtRewriteScalarExpr spec setting (Pa.BinaryOp ann opName arg0 arg1) = do
-    b1 <- mtRewriteScalarExpr spec setting arg0
-    b2 <- mtRewriteScalarExpr spec setting arg1
+mtRewriteScalarExpr spec setting (Pa.BinaryOp ann opName arg0 arg1) trefs = do
+    b1 <- mtRewriteScalarExpr spec setting arg0 trefs
+    b2 <- mtRewriteScalarExpr spec setting arg1 trefs
     Right $ Pa.BinaryOp ann opName b1 b2
-mtRewriteScalarExpr spec setting (Pa.SpecialOp ann opName args) = do
-    l <- mtRewriteScalarExprList spec setting args
+mtRewriteScalarExpr spec setting (Pa.SpecialOp ann opName args) trefs = do
+    l <- mtRewriteScalarExprList spec setting args trefs
     Right $ Pa.SpecialOp ann opName l
-mtRewriteScalarExpr spec setting (Pa.App ann funName args) = do
-    l <- mtRewriteScalarExprList spec setting args
+mtRewriteScalarExpr spec setting (Pa.App ann funName args) trefs = do
+    l <- mtRewriteScalarExprList spec setting args trefs
     Right $ Pa.App ann funName l
-mtRewriteScalarExpr spec setting (Pa.Parens ann expr) = do
-    h <- mtRewriteScalarExpr spec setting expr
+mtRewriteScalarExpr spec setting (Pa.Parens ann expr) trefs = do
+    h <- mtRewriteScalarExpr spec setting expr trefs
     Right $ Pa.Parens ann h
-mtRewriteScalarExpr spec setting (Pa.InPredicate ann expr i list) = do
-    h <- mtRewriteScalarExpr spec setting expr
+mtRewriteScalarExpr spec setting (Pa.InPredicate ann expr i list) trefs = do
+    h <- mtRewriteScalarExpr spec setting expr trefs
     Right $ Pa.InPredicate ann h i list
-mtRewriteScalarExpr spec setting (Pa.Exists ann sel) = do
+mtRewriteScalarExpr spec setting (Pa.Exists ann sel) _ = do
     h <- mtRewriteQuery spec setting sel
     Right $ Pa.Exists ann h
-mtRewriteScalarExpr spec setting (Pa.ScalarSubQuery ann sel) = do
+mtRewriteScalarExpr spec setting (Pa.ScalarSubQuery ann sel) _ = do
     h <- mtRewriteQuery spec setting sel
     Right $ Pa.ScalarSubQuery ann h
-mtRewriteScalarExpr spec (c,_) (Pa.Identifier iAnn i) =
+mtRewriteScalarExpr spec (c,_) (Pa.Identifier iAnn i) trefs  =
     let (tableName, attName) = getTableAndAttName i
-        comparability = lookupAttributeComparability spec (tableName, attName)
+        comparability = lookupAttributeComparability spec (tableName, attName) trefs
         rewrite (Just (MtTransformable to from)) (Just tName) =
             Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])
                 [Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to])
@@ -356,7 +369,7 @@ mtRewriteScalarExpr spec (c,_) (Pa.Identifier iAnn i) =
                 ,Pa.NumberLit iAnn (show c)]
         rewrite _ _ = Pa.Identifier iAnn i
     in Right $ rewrite comparability tableName 
-mtRewriteScalarExpr _ _ expr = Right expr
+mtRewriteScalarExpr _ _ expr _ = Right expr
 
 -- ##################################
 -- MT Annotate
