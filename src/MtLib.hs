@@ -1,4 +1,4 @@
-module MtLib 
+module MtLib
 (
     MtFromUniversalFunc
     ,MtToUniversalFunc
@@ -254,7 +254,6 @@ mtAdjustJoinPredicate t0 t1 opName expr
                                 (getTenantIdentifier t0 t0) (getTenantIdentifier t1 t1)) expr
 
 
--- todo: continue here... remember that the entire where clause is one scalar expr, so indeed binary ops have to propagate!!
 mtAdjustScalarExpr :: MtSchemaSpec -> Pa.ScalarExpr -> Either Pa.ParseErrorExtra Pa.ScalarExpr
 mtAdjustScalarExpr spec (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1)) =
     let checkNecessary  = opName `elem` ["=", "<>", "<", ">", ">=", "<="]
@@ -273,7 +272,10 @@ mtAdjustScalarExpr spec (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Iden
         adjust True _ _ _ (Just MtSpecific) = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1) -- add parse error here later
         adjust _ _ _ _ _ = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1) -- add parse error here later
     in adjust checkNecessary t0 comp0 t1 comp1
-
+mtAdjustScalarExpr spec (Pa.BinaryOp ann i arg0 arg1) = do
+    h <- mtAdjustScalarExpr spec arg0
+    t <- mtAdjustScalarExpr spec arg1
+    Right $ Pa.BinaryOp ann i h t
 mtAdjustScalarExpr spec (Pa.PrefixOp ann opName arg) = do
     h <- mtAdjustScalarExpr spec arg
     Right $ Pa.PrefixOp ann opName h

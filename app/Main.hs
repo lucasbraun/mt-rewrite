@@ -26,7 +26,8 @@ generateCustomerTable = mtSpecificTableFromList
 
 generateOrdersTable :: MtSpecificTable
 generateOrdersTable = mtSpecificTableFromList
-    [("O_CUSTKEY", MtSpecific)
+    [("O_ORDERKEY", MtSpecific)
+    ,("O_CUSTKEY", MtSpecific)
     ,("O_ORDERSTATUS", MtComparable)
     ,("O_TOTALPRICE", MtTransformable "currencyToUniversal" "currencyFromUniversal")
     ,("O_ORDERDATE", MtComparable)
