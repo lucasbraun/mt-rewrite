@@ -189,42 +189,6 @@ mtRewriteTrefList spec setting (tref:trefs) = do
     Right $ tref : t
 mtRewriteTrefList _ _ [] = Right []
 
-mtRewriteSelectList :: MtSchemaSpec -> MtSetting -> Pa.SelectList -> Pa.TableRefList -> Either Pa.ParseErrorExtra Pa.SelectList
-mtRewriteSelectList spec setting (Pa.SelectList ann items) trefs = do
-    t <- mtRewriteSelectItems spec setting items trefs
-    Right $ Pa.SelectList ann t
-
-mtRewriteSelectItems :: MtSchemaSpec -> MtSetting -> [Pa.SelectItem] -> Pa.TableRefList -> Either Pa.ParseErrorExtra [Pa.SelectItem]
--- default case, recursively call rewrite on single item
-mtRewriteSelectItems spec setting (item:items) trefs = do
-    h <- mtRewriteSelectItem spec setting item trefs
-    t <- mtRewriteSelectItems spec setting items trefs
-    Right $ h : t
-mtRewriteSelectItems _ _ [] _ = Right []
-
-mtRewriteSelectItem :: MtSchemaSpec -> MtSetting -> Pa.SelectItem -> Pa.TableRefList -> Either Pa.ParseErrorExtra Pa.SelectItem
-mtRewriteSelectItem spec setting (Pa.SelExp ann scalExp) trefs = do
-    newExp <- mtRewriteScalarExpr spec setting scalExp trefs
-    let create (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
-                [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
-                    [Pa.Identifier a4 i, arg0]
-                ,Pa.NumberLit a5 arg1]) 
-                    | containsString to "ToUniversal" && containsString from "FromUniversal"   = let (_ , Just attName) = getTableAndAttName i
-                        in  Pa.SelectItem ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
-                            [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
-                                [Pa.Identifier a4 i, arg0]
-                            ,Pa.NumberLit a5 arg1]) (Pa.Nmc attName)
-                    | otherwise                                                         =
-                        Pa.SelExp ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
-                            [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
-                                [Pa.Identifier a4 i, arg0]
-                            ,Pa.NumberLit a5 arg1])
-        create expr                                                                     = Pa.SelExp ann expr
-    Right $ create newExp
-mtRewriteSelectItem spec setting (Pa.SelectItem ann scalExp newName) trefs = do
-    h <- mtRewriteScalarExpr spec setting scalExp trefs
-    Right $ Pa.SelectItem ann h newName
-
 -- adds a dataset filter for a specific table to an existing where predicate
 -- only adds filter for tables that are tenant-specific
 addDFilter :: MtSchemaSpec -> MtDataSet -> Pa.TableRef -> Maybe Pa.ScalarExpr -> Maybe MtTableName -> Maybe Pa.ScalarExpr
@@ -255,6 +219,11 @@ mtAdjustWhereClause spec (Just whereClause) trefs = do
     adjustedExp <- mtAdjustScalarExpr spec whereClause trefs
     Right $ Just adjustedExp
 mtAdjustWhereClause _ whereClause _ = Right whereClause
+
+mtRewriteSelectList :: MtSchemaSpec -> MtSetting -> Pa.SelectList -> Pa.TableRefList -> Either Pa.ParseErrorExtra Pa.SelectList
+mtRewriteSelectList spec setting (Pa.SelectList ann items) trefs = do
+    t <- mtRewriteSelectItems spec setting items trefs
+    Right $ Pa.SelectList ann t
 
 -- adds tenant identifier for mt-specific predicates
 mtAdjustJoinPredicate :: MtTableName -> MtTableName -> String -> Pa.ScalarExpr -> Pa.ScalarExpr
@@ -322,6 +291,37 @@ mtRewriteMaybeScalarExpr spec setting (Just expr) trefs = do
     h <- mtRewriteScalarExpr spec setting expr trefs
     Right $ Just h
 mtRewriteMaybeScalarExpr _ _ Nothing _ = Right Nothing
+
+mtRewriteSelectItems :: MtSchemaSpec -> MtSetting -> [Pa.SelectItem] -> Pa.TableRefList -> Either Pa.ParseErrorExtra [Pa.SelectItem]
+-- default case, recursively call rewrite on single item
+mtRewriteSelectItems spec setting (item:items) trefs = do
+    h <- mtRewriteSelectItem spec setting item trefs
+    t <- mtRewriteSelectItems spec setting items trefs
+    Right $ h : t
+mtRewriteSelectItems _ _ [] _ = Right []
+
+mtRewriteSelectItem :: MtSchemaSpec -> MtSetting -> Pa.SelectItem -> Pa.TableRefList -> Either Pa.ParseErrorExtra Pa.SelectItem
+mtRewriteSelectItem spec setting (Pa.SelExp ann scalExp) trefs = do
+    newExp <- mtRewriteScalarExpr spec setting scalExp trefs
+    let create (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
+                [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
+                    [Pa.Identifier a4 i, arg0]
+                ,Pa.NumberLit a5 arg1]) 
+                    | containsString to "ToUniversal" && containsString from "FromUniversal"   = let (_ , Just attName) = getTableAndAttName i
+                        in  Pa.SelectItem ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
+                            [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
+                                [Pa.Identifier a4 i, arg0]
+                            ,Pa.NumberLit a5 arg1]) (Pa.Nmc attName)
+                    | otherwise                                                         =
+                        Pa.SelExp ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
+                            [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
+                                [Pa.Identifier a4 i, arg0]
+                            ,Pa.NumberLit a5 arg1])
+        create expr                                                                     = Pa.SelExp ann expr
+    Right $ create newExp
+mtRewriteSelectItem spec setting (Pa.SelectItem ann scalExp newName) trefs = do
+    h <- mtRewriteScalarExpr spec setting scalExp trefs
+    Right $ Pa.SelectItem ann h newName
 
 mtRewriteScalarExprList :: MtSchemaSpec -> MtSetting -> [Pa.ScalarExpr] -> Pa.TableRefList -> Either Pa.ParseErrorExtra [Pa.ScalarExpr]
 mtRewriteScalarExprList spec setting (arg:args) trefs = do
