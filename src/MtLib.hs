@@ -108,12 +108,13 @@ getTenantAttributeName s = s ++ "_TENANT_KEY"
 getTenantIdentifier :: String -> MtTableName -> Pa.ScalarExpr
 getTenantIdentifier tName mtName = Pa.Identifier A.emptyAnnotation $ Pa.Name A.emptyAnnotation [Pa.Nmc tName, Pa.Nmc $ getTenantAttributeName mtName]
 
-isGlobalTable :: MtSchemaSpec -> MtTableName -> Bool
-isGlobalTable spec tName =
+isGlobalTable :: MtSchemaSpec -> Maybe MtTableName -> Bool
+isGlobalTable spec (Just tName) =
     let tableSpec = M.lookup tName spec
         analyse (Just MtGlobalTable)    = True
         analyse _                       = False
     in analyse tableSpec
+isGlobalTable _ Nothing = True
 
 -- returns old name (name before renaming) for a specific table name given the tref list
 getOldTableName :: Maybe MtTableName -> Pa.TableRefList -> Maybe MtTableName
@@ -158,6 +159,12 @@ containsString l s = containsString' l s True where
     containsString' [] _ _          = False
     containsString' (x:xs) (y:ys) h = (y == x && containsString' xs ys False) || (h && containsString' xs (y:ys) h)
 
+removeDuplicates :: Eq a => [a] -> [a]
+removeDuplicates = foldr (\x seen ->
+    if x `elem` seen
+    then seen
+    else x : seen) []
+
 -- the main rewrite functions
 mtRewriteQuery :: MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> MtSqlTree
 mtRewriteQuery spec (c,ds) (Pa.Select ann selDistinct selSelectList selTref selWhere
@@ -194,7 +201,7 @@ mtRewriteTrefList _ _ [] = Right []
 addDFilter :: MtSchemaSpec -> MtDataSet -> Pa.TableRef -> Maybe Pa.ScalarExpr -> Maybe MtTableName -> Maybe Pa.ScalarExpr
 addDFilter spec ds (Pa.Tref _ (Pa.Name nAnn nameList)) whereClause priorName =
     let (Pa.Nmc tName)      = last nameList
-        isGlobal            = isGlobalTable spec tName
+        isGlobal            = isGlobalTable spec (Just tName)
         newName (Just n)    = n
         newName Nothing     = tName
         inPred
@@ -283,8 +290,21 @@ omitIfNecessary spec trefs (Pa.Identifier iAnn name) =
     in Pa.Identifier iAnn (applyIf comp)
 omitIfNecessary _ _ expr = expr
 
-mtRewriteGroupByClause :: MtSchemaSpec -> Pa.TableRefList -> [Pa.ScalarExpr] -> [Pa.ScalarExpr]
-mtRewriteGroupByClause spec trefs = map (omitIfNecessary spec trefs)
+-- extends the group-by clause with references to tenant keys wehre necessary, returns only the additional keys
+extendTenantKeys :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprList -> Pa.ScalarExprList
+extendTenantKeys spec trefs ((Pa.Identifier _ name):exprs) =
+    let (tName, _)    = getTableAndAttName name
+        oldName             = getOldTableName tName trefs
+        others              = extendTenantKeys spec trefs exprs
+        addIf (Just newTName) (Just oldTName) 
+            | isGlobalTable spec oldName    = others
+            | otherwise                     = others ++ [getTenantIdentifier newTName oldTName]
+        addIf _ _ = others
+    in addIf tName oldName
+extendTenantKeys _ _ _ = []
+
+mtRewriteGroupByClause :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprList -> Pa.ScalarExprList
+mtRewriteGroupByClause spec trefs = (map (omitIfNecessary spec trefs)) . (\l -> (removeDuplicates (extendTenantKeys spec trefs l)) ++ l)
 
 mtRewriteOrderByClause :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
 mtRewriteOrderByClause spec trefs ((expr, dir, no):list) = (omitIfNecessary spec trefs expr, dir, no) : mtRewriteOrderByClause spec trefs list
@@ -327,7 +347,7 @@ mtRewriteSelectItem spec setting (Pa.SelectItem ann scalExp newName) trefs = do
     h <- mtRewriteScalarExpr spec setting scalExp trefs
     Right $ Pa.SelectItem ann h newName
 
-mtRewriteScalarExprList :: MtSchemaSpec -> MtSetting -> [Pa.ScalarExpr] -> Pa.TableRefList -> Either Pa.ParseErrorExtra [Pa.ScalarExpr]
+mtRewriteScalarExprList :: MtSchemaSpec -> MtSetting -> Pa.ScalarExprList -> Pa.TableRefList -> Either Pa.ParseErrorExtra Pa.ScalarExprList
 mtRewriteScalarExprList spec setting (arg:args) trefs = do
     newArg <- mtRewriteScalarExpr spec setting arg trefs
     newArgs <- mtRewriteScalarExprList spec setting args trefs
