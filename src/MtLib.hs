@@ -226,17 +226,21 @@ mtRewriteSelectList spec setting (Pa.SelectList ann items) trefs = do
     Right $ Pa.SelectList ann t
 
 -- adds tenant identifier for mt-specific predicates
-mtAdjustJoinPredicate :: MtTableName -> MtTableName -> String -> Pa.ScalarExpr -> Pa.ScalarExpr
-mtAdjustJoinPredicate t0 t1 opName expr
-    | opName == "<>"    = Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "or"])
-                            (Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "<>"])
-                                (getTenantIdentifier t0 t0) (getTenantIdentifier t1 t1)) expr
-    | otherwise         = Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "and"])
-                            (Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "="])
-                                (getTenantIdentifier t0 t0) (getTenantIdentifier t1 t1)) expr
+mtAdjustJoinPredicate :: MtTableName -> MtTableName -> String -> Pa.ScalarExpr -> Pa.TableRefList -> Pa.ScalarExpr
+mtAdjustJoinPredicate t0 t1 opName expr trefs =
+    let (Just old0) = getOldTableName (Just t0) trefs
+        (Just old1) = getOldTableName (Just t1) trefs
+        exec
+            | opName == "<>"    = Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "or"])
+                                    (Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "<>"])
+                                        (getTenantIdentifier t0 old0) (getTenantIdentifier t1 old1)) expr
+            | otherwise         = Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "and"])
+                                    (Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "="])
+                                        (getTenantIdentifier t0 old0) (getTenantIdentifier t1 old1)) expr
+    in exec
 
 
-mtAdjustScalarExpr :: MtSchemaSpec -> Pa.ScalarExpr -> Pa.TableRefList-> Either Pa.ParseErrorExtra Pa.ScalarExpr
+mtAdjustScalarExpr :: MtSchemaSpec -> Pa.ScalarExpr -> Pa.TableRefList -> Either Pa.ParseErrorExtra Pa.ScalarExpr
 mtAdjustScalarExpr spec (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1)) trefs =
     let checkNecessary  = opName `elem` ["=", "<>", "<", ">", ">=", "<="]
         (t0, a0)        = getTableAndAttName n0
@@ -247,7 +251,7 @@ mtAdjustScalarExpr spec (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Iden
         adjust True (Just tn0) (Just MtSpecific) (Just tn1) (Just MtSpecific)
             | tn0 == tn1    = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1)
             | otherwise     = Right $ mtAdjustJoinPredicate tn0 tn1 opName
-                                (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1))
+                                (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1)) trefs
         adjust True _ (Just MtSpecific) _ (Just MtSpecific) = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1) -- add parse error here later
 
         adjust True _ (Just MtSpecific) _ _ = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1) -- add parse error here later
@@ -363,10 +367,11 @@ mtRewriteScalarExpr spec (c,_) (Pa.Identifier iAnn i) trefs  =
     let (tableName, attName) = getTableAndAttName i
         comparability = lookupAttributeComparability spec (tableName, attName) trefs
         rewrite (Just (MtTransformable to from)) (Just tName) =
-            Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])
-                [Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to])
-                    [Pa.Identifier iAnn i, getTenantIdentifier tName tName]
-                ,Pa.NumberLit iAnn (show c)]
+            let (Just oldTName) = getOldTableName (Just tName) trefs
+            in  Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])
+                    [Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to])
+                        [Pa.Identifier iAnn i, getTenantIdentifier tName oldTName]
+                    ,Pa.NumberLit iAnn (show c)]
         rewrite _ _ = Pa.Identifier iAnn i
     in Right $ rewrite comparability tableName 
 mtRewriteScalarExpr _ _ expr _ = Right expr
