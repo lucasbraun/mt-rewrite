@@ -66,8 +66,9 @@ generateTestSchema = mtSchemaSpecFromList
     ,("LINEITEM", FromMtSpecificTable generateLineitemTable)
     ]
 
-main :: IO ()
-main = do
+
+runTestQueries :: MtSchemaSpec -> MtSetting -> IO ()
+runTestQueries spec setting = do
     let queries = ["SELECT * FROM SUPPLIER;"
                    ,"SELECT * FROM SUPPLIER WHERE S_NAME = ?;"
                    ,"SELECT DISTINCT S_NAME FROM SUPPLIER WHERE S_ACCTBAL > 42;"
@@ -77,13 +78,10 @@ main = do
                    ,"SELECT C_CUSTKEY, C_NAME, SUM(L_EXTENDEDPRICE*(1-L_DISCOUNT)) AS REVENUE, C_ACCTBAL, N_NAME, C_ADDRESS, C_PHONE, C_COMMENT FROM CUSTOMER, ORDERS, LINEITEM, NATION WHERE C_CUSTKEY = O_CUSTKEY AND L_ORDERKEY = O_ORDERKEY AND O_ORDERDATE>= '1993-10-01' AND O_ORDERDATE < cast('1994-01-01' as date) AND L_RETURNFLAG = 'R' AND C_NATIONKEY = N_NATIONKEY GROUP BY C_CUSTKEY, C_NAME, C_ACCTBAL, C_PHONE, N_NAME, C_ADDRESS, C_COMMENT ORDER BY REVENUE DESC LIMIT 20" -- Q10
                    ,"SELECT CNTRYCODE, COUNT(*) AS NUMCUST, SUM(C_ACCTBAL) AS TOTACCTBAL FROM (SELECT SUBSTRING(C_PHONE,1,2) AS CNTRYCODE, C_ACCTBAL FROM CUSTOMER WHERE SUBSTRING(C_PHONE,1,2) IN ('13', '31', '23', '29', '30', '18', '17') AND C_ACCTBAL > (SELECT AVG(C_ACCTBAL) FROM CUSTOMER WHERE C_ACCTBAL > 0.00 AND SUBSTRING(C_PHONE,1,2) IN ('13', '31', '23', '29', '30', '18', '17')) AND NOT EXISTS ( SELECT * FROM ORDERS WHERE O_CUSTKEY = C_CUSTKEY)) AS CUSTSALE GROUP BY CNTRYCODE ORDER BY CNTRYCODE" -- Q22
                    ,"SELECT C.C_CUSTKEY, C.C_NAME, SUM(L.L_EXTENDEDPRICE*(1-L.L_DISCOUNT)) AS REVENUE, C.C_ACCTBAL, N.N_NAME, C.C_ADDRESS, C.C_PHONE, C.C_COMMENT FROM CUSTOMER C, ORDERS O, LINEITEM L, NATION N WHERE C.C_CUSTKEY = O.O_CUSTKEY AND L.L_ORDERKEY = O.O_ORDERKEY AND O.O_ORDERDATE>= '1993-10-01' AND O.O_ORDERDATE < cast('1994-01-01' as date) AND L.L_RETURNFLAG = 'R' AND C.C_NATIONKEY = N.N_NATIONKEY GROUP BY C.C_CUSTKEY, C.C_NAME, C.C_ACCTBAL, C.C_PHONE, N.N_NAME, C.C_ADDRESS, C.C_COMMENT ORDER BY REVENUE DESC LIMIT 20" -- Q10, with tables renamed
-                   ,"SELECT C_NAME, O_ORDERKEY FROM CUSTOMER, ORDERS WHERE C_CUSTKEY = O_TOTALPRICE"
+                   ,"SELECT C_NAME, N_NATIONKEY FROM CUSTOMER, NATION WHERE C_CUSTKEY = N_NATIONKEY"
                    ,"SELECT C_NAME, O_ORDERKEY FROM CUSTOMER, ORDERS WHERE O_TOTALPRICE = C_CUSTKEY "
                    ]
-    let schemaSpec = generateTestSchema
-    let client = 7
-    let dataset = [3,7]
-    
+
     -- test pretty print
     putStrLn "\nPretty Print with error looks like this:"
     putStrLn $ mtPrettyPrint $ mtParse "SELECT;" -- should print an error message
@@ -96,7 +94,7 @@ main = do
         putStrLn $ query ++ " parses to:\n"
         let parsedQuery = mtParse query
         print parsedQuery
-        let rewrittenQuery = mtRewrite schemaSpec (client, dataset) query
+        let rewrittenQuery = mtRewrite spec setting query
         putStrLn $ "\nIts rewritten form is:\n  " ++ mtPrettyPrint rewrittenQuery
         putStrLn "and has the following syntax tree:\n"
         print rewrittenQuery 
@@ -104,3 +102,47 @@ main = do
         queries
 
     putStrLn "\n\n"
+
+sessionLoop :: MtSchemaSpec -> MtSetting -> IO ()
+sessionLoop spec setting = do
+    line <- getLine
+    if line == "logout" || line == "l"
+        then return ()
+        else do
+            if line == "test"
+                then do
+                    runTestQueries spec setting
+                    sessionLoop spec setting
+                else do
+                    putStrLn $ "The query parses to:\n" ++ mtPrettyPrint (mtParse line)
+                    putStrLn $ "\nIts rewritten form is:\n  " ++ (mtPrettyPrint (mtRewrite spec setting line))
+                    sessionLoop spec setting
+
+mainLoop :: MtSchemaSpec -> IO ()
+mainLoop spec = do
+    putStrLn "Please write 'login'/'l' to login or any other word to quit"
+    line <- getLine
+    if line /= "login" && line /= "l"
+        then return ()
+        else do
+            putStrLn "Please enter your client id:"
+            line1 <- getLine
+            let c = read line1 :: Int
+            putStrLn "Please enter your dataset as space-separated tenant ids:"
+            line2 <- getLine
+            let d = map read $ words line2 :: [Int]
+            putStrLn ("###############################################")
+            putStrLn ("Successfully logged in with C=" ++ show c ++ " and D=" ++ show d)
+            putStrLn ("###############################################")
+            putStrLn "Please write a query you want to rewrite or type 'logout'/'l' to logout or 'test' to run a set of test queries."
+            sessionLoop spec (c,d)
+            mainLoop spec
+
+main :: IO ()
+main = do
+    let schemaSpec = generateTestSchema
+    mainLoop schemaSpec
+    -- let client = 7
+    -- let dataset = [3,7]
+    -- runTestQueries schemaSpec client dataset
+    

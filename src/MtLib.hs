@@ -274,9 +274,9 @@ mtAdjustScalarExpr spec (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Iden
             | otherwise     = Right $ mtAdjustJoinPredicate tn0 tn1 opName
                                 (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1)) trefs
         adjust True _ (Just MtSpecific) _ _ = Left $ FromMtRewriteError ("cannot compare tenant-specific attribute "
-            ++ (printName n0) ++ " with non-specific attribute " ++ (printName n1) ++ "!")
+            ++ printName n0 ++ " with non-specific attribute " ++ printName n1 ++ "!")
         adjust True _ _ _ (Just MtSpecific) = Left $ FromMtRewriteError ("cannot compare tenant-specific attribute "
-            ++ (printName n1) ++ " with non-specific attribute " ++ (printName n0) ++ "!")
+            ++ printName n1 ++ " with non-specific attribute " ++ printName n0 ++ "!")
         adjust _ _ _ _ _ = Right $ Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1)
     in adjust checkNecessary t0 comp0 t1 comp1
 mtAdjustScalarExpr spec (Pa.BinaryOp ann i arg0 arg1) trefs = do
@@ -306,7 +306,7 @@ omitIfNecessary _ _ expr = expr
 
 -- extends the group-by clause with references to tenant keys wehre necessary, returns only the additional keys
 extendTenantKeys :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprList -> Pa.ScalarExprList
-extendTenantKeys spec trefs ((Pa.Identifier _ name):exprs) =
+extendTenantKeys spec trefs (Pa.Identifier _ name:exprs) =
     let (tName, _)    = getTableAndAttName name
         oldName             = getOldTableName tName trefs
         others              = extendTenantKeys spec trefs exprs
@@ -318,7 +318,7 @@ extendTenantKeys spec trefs ((Pa.Identifier _ name):exprs) =
 extendTenantKeys _ _ _ = []
 
 mtRewriteGroupByClause :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprList -> Pa.ScalarExprList
-mtRewriteGroupByClause spec trefs = (map (omitIfNecessary spec trefs)) . (\l -> (removeDuplicates (extendTenantKeys spec trefs l)) ++ l)
+mtRewriteGroupByClause spec trefs = map (omitIfNecessary spec trefs) . (\l -> removeDuplicates (extendTenantKeys spec trefs l) ++ l)
 
 mtRewriteOrderByClause :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
 mtRewriteOrderByClause spec trefs ((expr, dir, no):list) = (omitIfNecessary spec trefs expr, dir, no) : mtRewriteOrderByClause spec trefs list
