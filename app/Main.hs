@@ -102,9 +102,11 @@ runTestQueries spec setting = do
         queries
 
     putStrLn "\n\n"
+    return ()
 
 sessionLoop :: MtSchemaSpec -> MtSetting -> IO ()
 sessionLoop spec setting = do
+    putStrLn ">> Please write a query you want to rewrite or type 'logout'/'l' to logout or 'test' to run a set of test queries."
     line <- getLine
     if line == "logout" || line == "l"
         then return ()
@@ -120,7 +122,7 @@ sessionLoop spec setting = do
 
 mainLoop :: MtSchemaSpec -> IO ()
 mainLoop spec = do
-    putStrLn "Please write 'login'/'l' to login or any other word to quit"
+    putStrLn ">> Please write 'login'/'l' to login or any other word to quit"
     line <- getLine
     if line /= "login" && line /= "l"
         then return ()
@@ -134,7 +136,6 @@ mainLoop spec = do
             putStrLn ("###############################################")
             putStrLn ("Successfully logged in with C=" ++ show c ++ " and D=" ++ show d)
             putStrLn ("###############################################")
-            putStrLn "Please write a query you want to rewrite or type 'logout'/'l' to logout or 'test' to run a set of test queries."
             sessionLoop spec (c,d)
             mainLoop spec
 
@@ -142,6 +143,7 @@ main :: IO ()
 main = do
     let schemaSpec = generateTestSchema
     mainLoop schemaSpec
+    return ()
     -- let client = 7
     -- let dataset = [3,7]
     -- runTestQueries schemaSpec client dataset
