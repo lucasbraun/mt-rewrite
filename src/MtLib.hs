@@ -16,6 +16,7 @@ module MtLib
     ,MtRewriteResult
     ,mtParse
     ,mtPrettyPrint
+    ,mtCompactPrint
     ,mtRewrite
 ) where
 
@@ -85,6 +86,14 @@ mtParse query = toMtRewriteResult $ Pa.parseQueryExpr
 mtPrettyPrint :: MtRewriteResult -> String
 mtPrettyPrint (Left err) = show err
 mtPrettyPrint (Right query) = L.unpack $ Pr.prettyQueryExpr Pr.defaultPrettyFlags query
+
+mtCompactPrint :: MtRewriteResult -> String
+mtCompactPrint result =
+    let prettyResult = mtPrettyPrint result
+        clearSpaces (' ':' ':word) = clearSpaces (' ':word)
+        clearSpaces (c:word) = c:(clearSpaces word)
+        clearSpaces _ = []
+    in  clearSpaces (map (\c -> if c=='\n' then ' '; else c) prettyResult)
 
 -- ##################################
 -- MT Rewrite
