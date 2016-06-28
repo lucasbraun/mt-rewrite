@@ -2,6 +2,7 @@ module Main where
 
 import MtLib
 import Control.Monad
+import System.IO
 
 generateCustomerTable :: MtSpecificTable
 generateCustomerTable = mtSpecificTableFromList
@@ -140,9 +141,43 @@ runTPCHQueries spec setting = do
     putStrLn "\n\n"
     return ()
 
+runQueryFile :: MtSchemaSpec -> MtSetting -> (String, String) -> IO ()
+runQueryFile spec setting (infile, outfile)= do
+    putStr $ "Reading from " ++ infile ++ " and storing results in " ++ outfile ++ "..."
+
+    inputHandle <- openFile infile ReadMode
+    outputHandle <- openFile outfile WriteMode
+    contents <- hGetContents inputHandle
+    let queries = lines contents
+
+    mapM_ (\query -> do
+        let ws = words query
+        if (head (head ws)) == '-'
+            then do
+                -- it is just a comment --> leave as is
+                hPutStrLn outputHandle query
+                return ()
+            else do
+                let rewrittenQuery = mtRewrite spec setting query
+                hPutStrLn outputHandle (mtCompactPrint rewrittenQuery)
+                return ()
+        ) queries
+
+    hClose inputHandle
+    hFlush outputHandle
+    hClose outputHandle
+    putStrLn "[DONE]\n"
+    return ()
+
+awaitInput :: IO ()
+awaitInput = do
+    putStr ">> "
+    return ()
+
 sessionLoop :: MtSchemaSpec -> MtSetting -> IO ()
 sessionLoop spec setting = do
-    putStrLn ">> Please write a query you want to rewrite or type 'logout'/'l' to logout or 'test' to run a set of test queries."
+    putStrLn "Please write a query you want to rewrite or type 'logout'/'l' to logout or 'test' to run a set of test queries. Other options include 'tpch' to run the tpch queries and 'file <infile> <outfile>' to convert queries read from a file."
+    awaitInput
     line <- getLine
     Control.Monad.unless (line == "logout" || line == "l") $
         if line == "test"
@@ -155,19 +190,28 @@ sessionLoop spec setting = do
                         runTPCHQueries spec setting
                         sessionLoop spec setting
                     else do
-                        putStrLn $ "The query parses to:\n" ++ mtPrettyPrint (mtParse line)
-                        putStrLn $ "\nIts rewritten form is:\n  " ++ mtPrettyPrint (mtRewrite spec setting line)
-                        sessionLoop spec setting
+                        let ws = words line
+                        if (head ws) == "file"
+                            then do
+                                runQueryFile spec setting ((ws !! 1), (ws !! 2))
+                                sessionLoop spec setting
+                            else do
+                                putStrLn $ "The query parses to:\n" ++ mtPrettyPrint (mtParse line)
+                                putStrLn $ "\nIts rewritten form is:\n  " ++ mtPrettyPrint (mtRewrite spec setting line)
+                                sessionLoop spec setting
 
 mainLoop :: MtSchemaSpec -> IO ()
 mainLoop spec = do
-    putStrLn ">> Please write 'login'/'l' to login or any other word to quit"
+    putStrLn "Please write 'login'/'l' to login or any other word to quit "
+    awaitInput
     line <- getLine
     Control.Monad.unless (line /= "login" && line /= "l") $ do
         putStrLn "Please enter your client id:"
+        awaitInput
         line1 <- getLine
         let c = read line1 :: Int
         putStrLn "Please enter your dataset as space-separated tenant ids:"
+        awaitInput
         line2 <- getLine
         let d = map read $ words line2 :: [Int]
         putStrLn "###############################################"

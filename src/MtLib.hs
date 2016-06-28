@@ -68,7 +68,7 @@ mtSpecificTableFromList = M.fromList
 data MtRewriteError = FromParseError Pa.ParseErrorExtra | FromMtRewriteError String
 instance Show MtRewriteError where
     show (FromParseError err)     = show err
-    show (FromMtRewriteError err) = "ERROR: " ++ err
+    show (FromMtRewriteError err) = "MTSQL-ERROR: " ++ err
 
 type MtRewriteResult = Either MtRewriteError Pa.QueryExpr
 
@@ -90,6 +90,7 @@ mtPrettyPrint (Right query) = L.unpack $ Pr.prettyQueryExpr Pr.defaultPrettyFlag
 mtCompactPrint :: MtRewriteResult -> String
 mtCompactPrint result =
     let prettyResult = mtPrettyPrint result
+        clearSpaces ('\n':word) = clearSpaces (' ':word)
         clearSpaces (' ':' ':word) = clearSpaces (' ':word)
         clearSpaces (c:word) = c:(clearSpaces word)
         clearSpaces _ = []
