@@ -131,7 +131,12 @@ runTPCHQueries spec setting = do
     -- rewrite
     mapM_ (\(idx, query) -> do
         putStrLn "\n====================================================\n"
-        putStrLn $ "Query " ++ show idx
+        putStrLn $ "Query " ++ show idx ++ "\n"
+        -- DEBUG
+        -- putStrLn $ query ++ " parses to:\n"
+        -- putStrLn (show (mtParse query))
+        -- putStrLn ("\n")
+        -- DEBUG
         putStrLn $ query ++ " rewrites to:\n"
         let rewrittenQuery = mtRewrite spec setting query
         putStrLn (mtCompactPrint rewrittenQuery)

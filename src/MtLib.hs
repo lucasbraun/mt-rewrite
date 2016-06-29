@@ -436,8 +436,6 @@ mtRewriteScalarExpr _ _ expr _ = Right expr
 -- ##################################
 -- MT Annotate
 -- ##################################
---
--- TODO: annoations do not always work... but is also does not seem mission-critical so can make this better later...
 
 mtAnnotateStatement :: MtSchemaSpec -> Pa.Statement -> Pa.Statement
 mtAnnotateStatement spec (Pa.QueryStatement a q) = Pa.QueryStatement a (mtAnnotate spec q [])
@@ -465,6 +463,13 @@ mtAnnotate _ query _ = query
 mtAnnotateTrefList :: MtSchemaSpec -> Pa.TableRefList -> Pa.TableRefList
 mtAnnotateTrefList spec (Pa.SubTref ann sel:trefs) = Pa.SubTref ann (mtAnnotate spec sel []) : mtAnnotateTrefList spec trefs
 mtAnnotateTrefList spec (Pa.TableAlias ann tb tref:trefs) = Pa.TableAlias ann tb (head (mtAnnotateTrefList spec [tref])) : mtAnnotateTrefList spec trefs
+mtAnnotateTrefList spec (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.JoinOn a expr)):trefs) = Pa.JoinTref ann
+    (head (mtAnnotateTrefList spec [tref0]))
+    n t h
+    (head (mtAnnotateTrefList spec [tref1]))
+    (Just (Pa.JoinOn a (mtAnnotateScalarExpr spec (tref0:[tref1]) expr))) : mtAnnotateTrefList spec trefs
+--mtAnnotateTrefList spec (Pa.FullAlias ann tb cols tref:trefs) = Pa.FullAlias ann tb cols
+--    (head (mtAnnotateTrefList spec [tref])) : mtAnnotateTrefList spec trefs
 -- default case, recursively call annotation call on single item
 mtAnnotateTrefList spec (tref:trefs) = tref:mtAnnotateTrefList spec trefs
 mtAnnotateTrefList _ [] = []
@@ -496,16 +501,22 @@ mtAnnotateDirectionList spec trefs ((expr, dir, no):list) = (mtAnnotateScalarExp
 mtAnnotateDirectionList _ _ [] = []
 
 mtAnnotateScalarExpr :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> Pa.ScalarExpr
-mtAnnotateScalarExpr spec treflist (Pa.PrefixOp ann opName arg) = Pa.PrefixOp ann opName (mtAnnotateScalarExpr spec treflist arg)
-mtAnnotateScalarExpr spec treflist (Pa.PostfixOp ann opName arg) = Pa.PostfixOp ann opName (mtAnnotateScalarExpr spec treflist arg)
-mtAnnotateScalarExpr spec treflist (Pa.BinaryOp ann opName arg0 arg1) = Pa.BinaryOp ann opName
-        (mtAnnotateScalarExpr spec treflist arg0) (mtAnnotateScalarExpr spec treflist arg1)
-mtAnnotateScalarExpr spec treflist (Pa.SpecialOp ann opName args) = Pa.SpecialOp ann opName (map (mtAnnotateScalarExpr spec treflist) args)
-mtAnnotateScalarExpr spec treflist (Pa.App ann funName args) = Pa.App ann funName (map (mtAnnotateScalarExpr spec treflist) args)
-mtAnnotateScalarExpr spec treflist (Pa.Parens ann expr) = Pa.Parens ann (mtAnnotateScalarExpr spec treflist expr)
-mtAnnotateScalarExpr spec treflist (Pa.InPredicate ann expr i list) = Pa.InPredicate ann (mtAnnotateScalarExpr spec treflist expr) i list
+mtAnnotateScalarExpr spec trefs (Pa.PrefixOp ann opName arg) = Pa.PrefixOp ann opName (mtAnnotateScalarExpr spec trefs arg)
+mtAnnotateScalarExpr spec trefs (Pa.PostfixOp ann opName arg) = Pa.PostfixOp ann opName (mtAnnotateScalarExpr spec trefs arg)
+mtAnnotateScalarExpr spec trefs (Pa.BinaryOp ann opName arg0 arg1) = Pa.BinaryOp ann opName
+        (mtAnnotateScalarExpr spec trefs arg0) (mtAnnotateScalarExpr spec trefs arg1)
+mtAnnotateScalarExpr spec trefs (Pa.SpecialOp ann opName args) = Pa.SpecialOp ann opName (map (mtAnnotateScalarExpr spec trefs) args)
+mtAnnotateScalarExpr spec trefs (Pa.App ann funName args) = Pa.App ann funName (map (mtAnnotateScalarExpr spec trefs) args)
+mtAnnotateScalarExpr spec trefs (Pa.Parens ann expr) = Pa.Parens ann (mtAnnotateScalarExpr spec trefs expr)
+mtAnnotateScalarExpr spec trefs (Pa.InPredicate ann expr i list) =
+    let annotateInList (Pa.InList a elist) = Pa.InList a (map (mtAnnotateScalarExpr spec trefs) elist)
+        annotateInList (Pa.InQueryExpr a sel) = Pa.InQueryExpr a (mtAnnotate spec sel trefs)
+    in  Pa.InPredicate ann (mtAnnotateScalarExpr spec trefs expr) i (annotateInList list)
 mtAnnotateScalarExpr spec trefs (Pa.Exists ann sel) = Pa.Exists ann (mtAnnotate spec sel trefs)
 mtAnnotateScalarExpr spec trefs (Pa.ScalarSubQuery ann sel) = Pa.ScalarSubQuery ann (mtAnnotate spec sel trefs)
+mtAnnotateScalarExpr spec trefs (Pa.Case ann cases els) = Pa.Case ann
+    (map (\(explist, e) -> (map (mtAnnotateScalarExpr spec trefs) explist, mtAnnotateScalarExpr spec trefs e)) cases)
+    (mtAnnotateMaybeScalarExpr spec trefs els)
 mtAnnotateScalarExpr spec (Pa.Tref _ (Pa.Name _ [Pa.Nmc tname]):trefs) (Pa.Identifier iAnn (Pa.Name a (Pa.Nmc attName:nameComps)))
     | not (null nameComps)  = Pa.Identifier iAnn (Pa.Name a (Pa.Nmc attName : nameComps))
     | otherwise             =
@@ -516,6 +527,8 @@ mtAnnotateScalarExpr spec (Pa.Tref _ (Pa.Name _ [Pa.Nmc tname]):trefs) (Pa.Ident
             propagate False = mtAnnotateScalarExpr spec trefs (Pa.Identifier iAnn (Pa.Name a [Pa.Nmc attName]))
             propagate True  = Pa.Identifier iAnn (Pa.Name a [Pa.Nmc tname,Pa.Nmc attName])
         in  propagate contains
+-- for any other trefs, we still need to make sure that the rest of the trefs gets checked as well
+mtAnnotateScalarExpr spec (_:trefs) expr = mtAnnotateScalarExpr spec trefs expr
 -- default case handles anything we do not handle so far
 mtAnnotateScalarExpr _ _ expr = expr
 
