@@ -11,9 +11,9 @@ module MtLib
     ,MtClient
     ,MtDataSet
     ,MtSetting
+    ,MtRewriteResult
     ,mtSchemaSpecFromList
     ,mtSpecificTableFromList
-    ,MtRewriteResult
     ,mtParse
     ,mtPrettyPrint
     ,mtCompactPrint
@@ -115,6 +115,7 @@ mtRewrite :: MtSchemaSpec -> MtSetting -> String -> MtRewriteResult
 mtRewrite spec setting statement = do
     parsedStatement <- mtParse statement
     let annotatedStatement = mtAnnotateStatement spec parsedStatement
+    -- Right annotatedStatement -- DEBUG
     rewrittenStatement <- mtRewriteStatement spec setting annotatedStatement
     Right rewrittenStatement
 
@@ -138,7 +139,6 @@ isGlobalTable _ Nothing = True
 
 -- returns old name (name before renaming) for a specific table name given the tref list
 getOldTableName :: Maybe MtTableName -> Pa.TableRefList -> Maybe MtTableName
--- todo: continue here
 getOldTableName (Just tableName) (Pa.TableAlias _ (Pa.Nmc aliasName) (Pa.Tref _ (Pa.Name _ [Pa.Nmc tName])):trefs)
     | tableName == aliasName    = Just tName
     | otherwise                 = getOldTableName (Just tableName) trefs
@@ -436,6 +436,8 @@ mtRewriteScalarExpr _ _ expr _ = Right expr
 -- ##################################
 -- MT Annotate
 -- ##################################
+--
+-- TODO: annoations do not always work... but is also does not seem mission-critical so can make this better later...
 
 mtAnnotateStatement :: MtSchemaSpec -> Pa.Statement -> Pa.Statement
 mtAnnotateStatement spec (Pa.QueryStatement a q) = Pa.QueryStatement a (mtAnnotate spec q [])

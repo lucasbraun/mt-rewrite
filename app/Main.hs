@@ -90,6 +90,7 @@ runTestQueries spec setting = do
         putStrLn $ query ++ " parses to:\n"
         let parsedQuery = mtParse query
         print parsedQuery
+        -- TODO: problem is somewhere here...
         let rewrittenQuery = mtRewrite spec setting query
         putStrLn $ "\nIts rewritten form is:\n  " ++ mtPrettyPrint rewrittenQuery
         putStrLn "and has the following syntax tree:\n"
@@ -115,9 +116,9 @@ runTPCHQueries spec setting = do
                     ,"SELECT L_shipmode, SUM(CASE WHEN O_orderpriority = '1-URGENT' OR O_orderpriority = '2-HIGH' THEN 1 ELSE 0 END) AS HIGH_LINE_COUNT, SUM(CASE WHEN O_orderpriority <> '1-URGENT' AND O_orderpriority <> '2-HIGH' THEN 1 ELSE 0 END ) AS LOW_LINE_COUNT FROM Orders, Lineitem WHERE O_orderkey = L_orderkey AND L_shipmode IN ('MAIL','SHIP') AND L_commitdate < L_receiptdate AND L_shipdate < L_commitdate AND L_receiptdate >= '1994-01-01' AND L_receiptdate < '1995-10-01' GROUP BY L_shipmode ORDER BY L_shipmode;" --Q12
                     ," SELECT C_COUNT, COUNT(*) AS CUSTDIST FROM (SELECT C_custkey, COUNT(O_orderkey)FROM Customer left outer join Orders on C_custkey = O_custkey AND O_comment not like '%%special%%requests%%'GROUP BY C_custkey) AS C_Orders (C_custkey, C_COUNT) GROUP BY C_COUNT ORDER BY CUSTDIST DESC, C_COUNT DESC;" --Q13
                     ," SELECT 100.00* SUM(CASE WHEN P_type LIKE 'PROMO%%' THEN L_extendedprice*(1-L_discount) ELSE 0 END) / SUM(L_extendedprice*(1-L_discount)) AS PROMO_REVENUE FROM Lineitem, Part WHERE L_partkey = P_partkey AND L_shipdate >= '1995-09-01' AND L_shipdate < '1995-10-01';" --Q14
-                    ,"SELECT L_suppkey, SUM(L_extendedprice*(1-L_discount)) FROM Lineitem WHERE L_shipdate >= '1996-01-01' AND L_shipdate < '1996-04-01' as date GROUP BY L_suppkey;" --Q15 - Create View: CREATE VIEW REVENUE0 (Supplier_NO, TOTAL_REVENUE) AS 
+                    ,"CREATE VIEW REVENUE0 (Supplier_NO, TOTAL_REVENUE) AS SELECT L_suppkey, SUM(L_extendedprice*(1-L_discount)) FROM Lineitem WHERE L_shipdate >= '1996-01-01' AND L_shipdate < '1996-04-01' GROUP BY L_suppkey;" --Q15 - Create View
                     ,"SELECT S_suppkey, S_name, S_address, S_phone, TOTAL_REVENUE FROM Supplier, REVENUE0 WHERE S_suppkey = Supplier_NO AND TOTAL_REVENUE = (SELECT MAX(TOTAL_REVENUE) FROM REVENUE0) ORDER BY S_suppkey;" --Q15 - Query
-                    -- ,"DROP VIEW REVENUE0;" --Q15 - Drop View
+                    ,"DROP VIEW REVENUE0;" --Q15 - Drop View
                     ,"SELECT P_brand, P_type, P_size, COUNT(DISTINCT PS_suppkey) AS Supplier_CNT FROM Partsupp, Part WHERE P_partkey = PS_partkey AND P_brand <> 'Brand#45' AND P_type NOT LIKE 'MEDIUM POLISHED%%' AND P_size IN (49, 14, 23, 45, 19, 3, 36, 9) AND PS_suppkey NOT IN (SELECT S_suppkey FROM Supplier WHERE S_comment LIKE '%%Customer% Complaints%%') GROUP BY P_brand, P_type, P_size ORDER BY Supplier_CNT DESC, P_brand, P_type, P_size;" --Q16
                     ,"SELECT SUM(L_extendedprice)/7.0 AS AVG_YEARLY FROM Lineitem, Part WHERE P_partkey = L_partkey AND P_brand = 'Brand#23' AND P_container = 'MED BOX' AND L_quantity < (SELECT 0.2*AVG(L_quantity) FROM Lineitem WHERE L_partkey = P_partkey);" --Q17
                     ,"SELECT C_name, C_custkey, O_orderkey, O_orderdate, O_totalprice, SUM(L_quantity) FROM Customer, Orders, Lineitem WHERE O_orderkey IN (SELECT L_orderkey FROM Lineitem GROUP BY L_orderkey HAVING SUM(L_quantity) > 300) AND C_custkey = O_custkey AND O_orderkey = L_orderkey GROUP BY C_name, C_custkey, O_orderkey, O_orderdate, O_totalprice ORDER BY O_totalprice DESC, O_orderdate LIMIT 100;" --Q18
@@ -196,6 +197,7 @@ sessionLoop spec setting = do
                             else do
 -- TODO: something hangs here... the problem was introduced with commit 47edd65, but so far problem not identified...
                                 putStrLn $ "The query parses to:\n" ++ mtPrettyPrint (mtParse line)
+                                -- TODO: the problem is somewhere here
                                 putStrLn $ "\nIts rewritten form is:\n  " ++ mtPrettyPrint (mtRewrite spec setting line)
                                 sessionLoop spec setting
 
