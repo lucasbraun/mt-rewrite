@@ -70,14 +70,14 @@ instance Show MtRewriteError where
     show (FromParseError err)     = show err
     show (FromMtRewriteError err) = "MTSQL-ERROR: " ++ err
 
-type MtRewriteResult = Either MtRewriteError Pa.QueryExpr
+type MtRewriteResult = Either MtRewriteError Pa.Statement
 
-toMtRewriteResult :: Either Pa.ParseErrorExtra Pa.QueryExpr -> MtRewriteResult
+toMtRewriteResult :: Either Pa.ParseErrorExtra [Pa.Statement] -> MtRewriteResult
 toMtRewriteResult (Left err) = Left $ FromParseError err
-toMtRewriteResult (Right res)= Right res
+toMtRewriteResult (Right res)= Right $ head res
 
 mtParse :: String -> MtRewriteResult
-mtParse query = toMtRewriteResult $ Pa.parseQueryExpr
+mtParse query = toMtRewriteResult $ Pa.parseStatements
                     Pa.defaultParseFlags
                     "source"
                     (Just (0,0))
@@ -85,7 +85,7 @@ mtParse query = toMtRewriteResult $ Pa.parseQueryExpr
 
 mtPrettyPrint :: MtRewriteResult -> String
 mtPrettyPrint (Left err) = show err
-mtPrettyPrint (Right query) = L.unpack $ Pr.prettyQueryExpr Pr.defaultPrettyFlags query
+mtPrettyPrint (Right statement) = L.unpack $ Pr.prettyStatements Pr.defaultPrettyFlags [statement]
 
 mtCompactPrint :: MtRewriteResult -> String
 mtCompactPrint result =
@@ -110,12 +110,13 @@ mtCompactPrint result =
 -- This means it is context-free and somehow self-conained... or in other words every (sub-query) is in MT format
 -- All the other things should be deferred to optimizations
 
+-- parses a single SQL statement terminated by ;
 mtRewrite :: MtSchemaSpec -> MtSetting -> String -> MtRewriteResult
-mtRewrite spec setting query = do
-    parsedQuery <- mtParse query
-    let annotatedQuery = mtAnnotate spec parsedQuery []
-    rewrittenQuery <- mtRewriteQuery spec setting annotatedQuery []
-    Right rewrittenQuery
+mtRewrite spec setting statement = do
+    parsedStatement <- mtParse statement
+    let annotatedStatement = mtAnnotateStatement spec parsedStatement
+    rewrittenStatement <- mtRewriteStatement spec setting annotatedStatement
+    Right rewrittenStatement
 
 -- helper types and functions
 type TableAttributePair = (Maybe MtTableName, Maybe MtAttributeName)
@@ -188,18 +189,27 @@ containsString l s = containsString' l s True where
 --     then seen
 --     else x : seen) []
 
--- the main rewrite functions, for the case it is used in subqueries, it takes also the table refs from the outer queries into account
-mtRewriteQuery :: MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> Pa.TableRefList -> MtRewriteResult
-mtRewriteQuery spec (c,ds) (Pa.Select ann selDistinct selSelectList selTref selWhere
+mtRewriteStatement :: MtSchemaSpec -> MtSetting -> Pa.Statement -> MtRewriteResult
+mtRewriteStatement spec setting (Pa.QueryStatement a q) = do
+    rewrittenQuery <- mtRewriteQuery spec setting q []
+    Right $ Pa.QueryStatement a rewrittenQuery
+mtRewriteStatement spec setting (Pa.CreateView a n c q) = do
+    rewrittenQuery <- mtRewriteQuery spec setting q []
+    Right $ Pa.CreateView a n c rewrittenQuery
+mtRewriteStatement _ _ statement = Right $ statement
+
+-- the main rewrite function, for the case it is used in subqueries, it takes also the table refs from the outer queries into account
+mtRewriteQuery :: MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError Pa.QueryExpr
+mtRewriteQuery spec (c,d) (Pa.Select ann selDistinct selSelectList selTref selWhere
     selGroupBy selHaving selOrderBy selLimit selOffset selOption) trefs = do
         let allTrefs      = selTref ++ trefs    -- ordering matters here as the first value that fits is taken
-        newTrefs         <- mtRewriteTrefList spec (c,ds) selTref
-        newSelectList    <- mtRewriteSelectList spec (c,ds) selSelectList selTref
+        newTrefs         <- mtRewriteTrefList spec (c,d) selTref
+        newSelectList    <- mtRewriteSelectList spec (c,d) selSelectList selTref
         adjustedWhere    <- mtAdjustWhereClause spec selWhere allTrefs
-        transformedWhere <- mtRewriteMaybeScalarExpr spec (c,ds) adjustedWhere allTrefs
-        let filteredWhere = mtFilterWhereClause spec ds selTref transformedWhere
+        transformedWhere <- mtRewriteMaybeScalarExpr spec (c,d) adjustedWhere allTrefs
+        let filteredWhere = mtFilterWhereClause spec d selTref transformedWhere
         -- let newGroupBy    = mtRewriteGroupByClause spec selTref selGroupBy
-        newHaving        <- mtRewriteMaybeScalarExpr spec (c,ds) selHaving selTref
+        newHaving        <- mtRewriteMaybeScalarExpr spec (c,d) selHaving selTref
         -- let newOrderBy    = mtRewriteOrderByClause spec selTref selOrderBy
         Right $ Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
             selGroupBy -- newGroupBy
@@ -426,6 +436,11 @@ mtRewriteScalarExpr _ _ expr _ = Right expr
 -- ##################################
 -- MT Annotate
 -- ##################################
+
+mtAnnotateStatement :: MtSchemaSpec -> Pa.Statement -> Pa.Statement
+mtAnnotateStatement spec (Pa.QueryStatement a q) = Pa.QueryStatement a (mtAnnotate spec q [])
+mtAnnotateStatement spec (Pa.CreateView a n c q) = Pa.CreateView a n c (mtAnnotate spec q [])
+mtAnnotateStatement _ statement = statement
 
 -- make sure that every attribute of a specific table appears with its table name
 -- assumes that attributes not found within the schema are from global tables
