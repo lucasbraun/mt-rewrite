@@ -92,7 +92,7 @@ mtCompactPrint result =
     let prettyResult = mtPrettyPrint result
         clearSpaces ('\n':word) = clearSpaces (' ':word)
         clearSpaces (' ':' ':word) = clearSpaces (' ':word)
-        clearSpaces (c:word) = c:(clearSpaces word)
+        clearSpaces (c:word) = c:clearSpaces word
         clearSpaces _ = []
     in  clearSpaces (map (\c -> if c=='\n' then ' '; else c) prettyResult)
 
@@ -196,7 +196,7 @@ mtRewriteStatement spec setting (Pa.QueryStatement a q) = do
 mtRewriteStatement spec setting (Pa.CreateView a n c q) = do
     rewrittenQuery <- mtRewriteQuery spec setting q []
     Right $ Pa.CreateView a n c rewrittenQuery
-mtRewriteStatement _ _ statement = Right $ statement
+mtRewriteStatement _ _ statement = Right statement
 
 -- the main rewrite function, for the case it is used in subqueries, it takes also the table refs from the outer queries into account
 mtRewriteQuery :: MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError Pa.QueryExpr

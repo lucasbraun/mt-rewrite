@@ -61,7 +61,7 @@ generateTestSchema = mtSchemaSpecFromList
     ,("Lineitem", FromMtSpecificTable generateLineitemTable)
     ]
 
-
+-- TODO: something hangs here... the problem was introduced with commit 47edd65, but so far problem not identified...
 runTestQueries :: MtSchemaSpec -> MtSetting -> IO ()
 runTestQueries spec setting = do
     let queries = ["SELECT * FROM Supplier;"
@@ -73,8 +73,9 @@ runTestQueries spec setting = do
                     ,"SELECT C_custkey, C_name, SUM(L_extendedprice*(1-L_discount)) AS REVENUE, C_acctbal, N_name, C_address, C_phone, C_comment FROM Customer, Orders, Lineitem, Nation WHERE C_custkey = O_custkey AND L_orderkey = O_orderkey AND O_orderdate>= '1993-10-01' AND O_orderdate < cast('1994-01-01' as date) AND L_returnflag = 'R' AND C_nationkey = N_nationkey GROUP BY C_custkey, C_name, C_acctbal, C_phone, N_name, C_address, C_comment ORDER BY REVENUE DESC LIMIT 20" -- Q10
                     ,"SELECT CNTRYCODE, COUNT(*) AS NUMCUST, SUM(C_acctbal) AS TOTACCTBAL FROM (SELECT SUBSTRING(C_phone,1,2) AS CNTRYCODE, C_acctbal FROM Customer WHERE SUBSTRING(C_phone,1,2) IN ('13', '31', '23', '29', '30', '18', '17') AND C_acctbal > (SELECT AVG(C_acctbal) FROM Customer WHERE C_acctbal > 0.00 AND SUBSTRING(C_phone,1,2) IN ('13', '31', '23', '29', '30', '18', '17')) AND NOT EXISTS ( SELECT * FROM Orders WHERE O_custkey = C_custkey)) AS CUSTSALE GROUP BY CNTRYCODE ORDER BY CNTRYCODE" -- Q22
                     ,"SELECT C.c_custkey, C.c_name, SUM(L.l_extendedprice*(1-L.l_discount)) AS REVENUE, C.c_acctbal, N.n_name, C.c_address, C.c_phone, C.c_comment FROM Customer C, Orders O, Lineitem L, Nation N WHERE C.c_custkey = O.o_custkey AND L.l_orderkey = O.o_orderkey AND O.o_orderdate>= '1993-10-01' AND O.o_orderdate < cast('1994-01-01' as date) AND L.l_returnflag = 'R' AND C.c_nationkey = N.n_nationkey GROUP BY C.c_custkey, C.c_name, C.c_acctbal, C.c_phone, N.n_name, C.c_address, C.c_comment ORDER BY REVENUE DESC LIMIT 20" -- Q10, with tables renamed
-                    ,"SELECT C_name, N_nationkey FROM Customer, Nation WHERE C_custkey = N_nationkey"
-                    ,"SELECT C_name, O_orderkey FROM Customer, Orders WHERE O_totalprice = C_custkey "
+                    ,"SELECT C_name, N_nationkey FROM Customer, Nation WHERE C_custkey = N_nationkey" -- test MT error handling
+                    ,"SELECT C_name, O_orderkey FROM Customer, Orders WHERE O_totalprice = C_custkey " -- test MT error handling
+                    ,"SELECT S_name, COUNT(*) AS NUMWAIT FROM Supplier, Lineitem L1, Orders, Nation WHERE S_suppkey = L1.L_suppkey AND O_orderkey = L1.L_orderkey AND O_orderstatus = 'F' AND L1.L_receiptdate> L1.L_commitdate AND EXISTS (SELECT * FROM Lineitem L2 WHERE L2.L_orderkey = L1.L_orderkey AND L2.L_suppkey <> L1.L_suppkey) AND NOT EXISTS (SELECT * FROM Lineitem L3 WHERE L3.L_orderkey = L1.L_orderkey AND L3.L_suppkey <> L1.L_suppkey AND L3.L_receiptdate > L3.L_commitdate) AND S_nationkey = N_nationkey AND N_name = 'SAUDI ARABIA' GROUP BY S_name ORDER BY NUMWAIT DESC, S_name LIMIT 100;" -- Q21
                    ]
 
     -- test pretty print
@@ -93,14 +94,11 @@ runTestQueries spec setting = do
         putStrLn $ "\nIts rewritten form is:\n  " ++ mtPrettyPrint rewrittenQuery
         putStrLn "and has the following syntax tree:\n"
         print rewrittenQuery 
-        )
-        queries
+        ) queries
 
     putStrLn "\n\n"
     return ()
 
--- TODO: YEAR(...) instead of datapart?! --> maybe not
--- TODO: check why Q13, Q15 CREATE VIEW, and Q21 do not work properly
 runTPCHQueries :: MtSchemaSpec -> MtSetting -> IO ()
 runTPCHQueries spec setting = do
     let queries = ["SELECT L_returnflag, L_linestatus, SUM(L_quantity) AS SUM_QTY, SUM(L_extendedprice) AS SUM_BASE_PRICE, SUM(L_extendedprice*(1-L_discount)) AS SUM_DISC_PRICE, SUM(L_extendedprice*(1-L_discount)*(1+L_tax)) AS SUM_CHARGE, AVG(L_quantity) AS AVG_QTY, AVG(L_extendedprice) AS AVG_PRICE, AVG(L_discount) AS AVG_DISC, COUNT(*) AS COUNT_ORDER FROM Lineitem WHERE L_shipdate <= '1998-09-02' GROUP BY L_returnflag, L_linestatus ORDER BY L_returnflag,L_linestatus;" -- Q01
@@ -152,7 +150,7 @@ runQueryFile spec setting (infile, outfile)= do
 
     mapM_ (\query -> do
         let ws = words query
-        if (head (head ws)) == '-'
+        if head (head ws) == '-'
             then do
                 -- it is just a comment --> leave as is
                 hPutStrLn outputHandle query
@@ -191,41 +189,44 @@ sessionLoop spec setting = do
                         sessionLoop spec setting
                     else do
                         let ws = words line
-                        if (head ws) == "file"
+                        if head ws == "file"
                             then do
-                                runQueryFile spec setting ((ws !! 1), (ws !! 2))
+                                runQueryFile spec setting (ws !! 1, ws !! 2)
                                 sessionLoop spec setting
                             else do
+-- TODO: something hangs here... the problem was introduced with commit 47edd65, but so far problem not identified...
                                 putStrLn $ "The query parses to:\n" ++ mtPrettyPrint (mtParse line)
                                 putStrLn $ "\nIts rewritten form is:\n  " ++ mtPrettyPrint (mtRewrite spec setting line)
                                 sessionLoop spec setting
 
 mainLoop :: MtSchemaSpec -> IO ()
 mainLoop spec = do
-    putStrLn "Please write 'login'/'l' to login or any other word to quit "
+    putStrLn "Please write 'login'/'l'to login, 'test' to run a test for C=1 and D=[1,42], or any other word to quit "
     awaitInput
     line <- getLine
-    Control.Monad.unless (line /= "login" && line /= "l") $ do
-        putStrLn "Please enter your client id:"
-        awaitInput
-        line1 <- getLine
-        let c = read line1 :: Int
-        putStrLn "Please enter your dataset as space-separated tenant ids:"
-        awaitInput
-        line2 <- getLine
-        let d = map read $ words line2 :: [Int]
-        putStrLn "###############################################"
-        putStrLn ("Successfully logged in with C=" ++ show c ++ " and D=" ++ show d)
-        putStrLn "###############################################"
-        sessionLoop spec (c,d)
-        mainLoop spec
+    Control.Monad.unless (line /= "login" && line /= "l" && line /= "test") $
+        if line == "test"
+            then do
+                runTestQueries spec (1, [1,42])
+                mainLoop spec
+            else do
+                putStrLn "Please enter your client id:"
+                awaitInput
+                line1 <- getLine
+                let c = read line1 :: Int
+                putStrLn "Please enter your dataset as space-separated tenant ids:"
+                awaitInput
+                line2 <- getLine
+                let d = map read $ words line2 :: [Int]
+                putStrLn "###############################################"
+                putStrLn ("Successfully logged in with C=" ++ show c ++ " and D=" ++ show d)
+                putStrLn "###############################################"
+                sessionLoop spec (c,d)
+                mainLoop spec
 
 main :: IO ()
 main = do
     let schemaSpec = generateTestSchema
     mainLoop schemaSpec
     return ()
-    -- let client = 7
-    -- let dataset = [3,7]
-    -- runTestQueries schemaSpec client dataset
-    
+ 
