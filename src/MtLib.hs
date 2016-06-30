@@ -145,6 +145,7 @@ getOldTableName (Just tableName) (Pa.TableAlias _ (Pa.Nmc aliasName) (Pa.Tref _ 
 getOldTableName (Just tableName) (Pa.Tref _ (Pa.Name _ [Pa.Nmc tName]):trefs)
     | tableName == tName    = Just tName
     | otherwise             = getOldTableName (Just tableName) trefs
+getOldTableName (Just tableName) (Pa.JoinTref _ tref0 _ _ _ tref1 _ : trefs) = getOldTableName (Just tableName) (tref0:tref1:trefs)
 getOldTableName (Just tableName) (_:trefs) = getOldTableName (Just tableName) trefs
 getOldTableName _ [] = Nothing
 getOldTableName Nothing _ = Nothing
@@ -183,11 +184,11 @@ containsString l s = containsString' l s True where
     containsString' [] _ _          = False
     containsString' (x:xs) (y:ys) h = (y == x && containsString' xs ys False) || (h && containsString' xs (y:ys) h)
 
--- removeDuplicates :: Eq a => [a] -> [a]
--- removeDuplicates = foldr (\x seen ->
---     if x `elem` seen
---     then seen
---     else x : seen) []
+removeDuplicates :: Eq a => [a] -> [a]
+removeDuplicates = foldr (\x seen ->
+    if x `elem` seen
+    then seen
+    else x : seen) []
 
 mtRewriteStatement :: MtSchemaSpec -> MtSetting -> Pa.Statement -> MtRewriteResult
 mtRewriteStatement spec setting (Pa.QueryStatement a q) = do
@@ -205,16 +206,16 @@ mtRewriteQuery spec (c,d) (Pa.Select ann selDistinct selSelectList selTref selWh
         let allTrefs      = selTref ++ trefs    -- ordering matters here as the first value that fits is taken
         newTrefs         <- mtRewriteTrefList spec (c,d) selTref
         newSelectList    <- mtRewriteSelectList spec (c,d) selSelectList selTref
-        adjustedWhere    <- mtAdjustWhereClause spec selWhere allTrefs
-        transformedWhere <- mtRewriteMaybeScalarExpr spec (c,d) adjustedWhere allTrefs
-        let filteredWhere = mtFilterWhereClause spec d selTref transformedWhere
-        -- let newGroupBy    = mtRewriteGroupByClause spec selTref selGroupBy
+        adjustedWhere    <- mtAdjustWhereClause spec selWhere allTrefs -- adds predicates on tenant keys
+        transformedWhere <- mtRewriteMaybeScalarExpr spec (c,d) adjustedWhere allTrefs -- adds transformation functions
+        let filteredWhere = mtFilterWhereClause spec d selTref transformedWhere -- adds D-filters
+        let newGroupBy    = mtRewriteGroupByClause spec selTref selGroupBy
         newHaving        <- mtRewriteMaybeScalarExpr spec (c,d) selHaving selTref
-        -- let newOrderBy    = mtRewriteOrderByClause spec selTref selOrderBy
+        let newOrderBy    = mtRewriteOrderByClause spec selTref selOrderBy
         Right $ Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
-            selGroupBy -- newGroupBy
+            newGroupBy
             newHaving
-            selOrderBy -- newOrderBy
+            newOrderBy
             selLimit selOffset selOption
 -- default case handles anything we do not handle so far
 mtRewriteQuery _ _ query _ = Right query
@@ -228,12 +229,19 @@ mtRewriteTrefList spec setting (Pa.TableAlias ann tb tref:trefs) = do
     h <- mtRewriteTrefList spec setting [tref]
     t <- mtRewriteTrefList spec setting trefs
     Right $ Pa.TableAlias ann tb (head h) : t
-mtRewriteTrefList spec setting (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.JoinOn a expr)):trefs) = do
-    l <- mtRewriteTrefList spec setting [tref0]
-    r <- mtRewriteTrefList spec setting [tref1]
-    e <- mtRewriteScalarExpr spec setting expr (tref0:[tref1])
-    rest <- mtRewriteTrefList spec setting trefs
-    Right $ Pa.JoinTref ann (head l) n t h (head r) (Just (Pa.JoinOn a e)) : rest
+mtRewriteTrefList spec (c,d) (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.JoinOn a expr)):trefs) = do
+    l <- mtRewriteTrefList spec (c,d) [tref0]
+    r <- mtRewriteTrefList spec (c,d) [tref1]
+    let allTrefs = [tref0, tref1]
+    (Just adjusted) <- mtAdjustWhereClause spec (Just expr) allTrefs
+    transformed <- mtRewriteScalarExpr spec (c,d) adjusted allTrefs
+    let (Just filtered) = mtFilterWhereClause spec d allTrefs (Just transformed)
+    rest <- mtRewriteTrefList spec (c,d) trefs
+    Right $ Pa.JoinTref ann (head l) n t h (head r) (Just (Pa.JoinOn a filtered)) : rest
+mtRewriteTrefList spec setting (Pa.FullAlias ann tb cols tref:trefs) = do
+    h <- mtRewriteTrefList spec setting [tref]
+    l <- mtRewriteTrefList spec setting trefs
+    Right $ Pa.FullAlias ann tb cols (head h) : l
 mtRewriteTrefList spec setting (tref:trefs) = do
     t <- mtRewriteTrefList spec setting trefs
     Right $ tref : t
@@ -262,7 +270,7 @@ addDFilter spec ds (Pa.TableAlias _ (Pa.Nmc newName) tref) whereClause priorName
     in  addDFilter spec ds tref whereClause (Just $ finalName priorName)
 addDFilter _ _ _ whereClause _ = whereClause
 
--- checks the join predicates and adds necessary constraints as necessary
+-- checks the join predicates and adds necessary constraints
 -- right now only checks simple (non-nested and non-complex) join predicates
 mtAdjustWhereClause :: MtSchemaSpec -> Maybe Pa.ScalarExpr -> Pa.TableRefList-> Either MtRewriteError (Maybe Pa.ScalarExpr)
 mtAdjustWhereClause spec (Just whereClause) trefs = do
@@ -322,36 +330,36 @@ mtFilterWhereClause :: MtSchemaSpec -> MtDataSet -> Pa.TableRefList -> Maybe Pa.
 mtFilterWhereClause spec ds (tref:trefs) whereClause = mtFilterWhereClause spec ds trefs (addDFilter spec ds tref whereClause Nothing)
 mtFilterWhereClause _ _ [] whereClause = whereClause
 
--- -- ommmits the table name of an attribute if necessary, this is actually the case for transformable attributre in group- and order-by clauses
--- omitIfNecessary :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> Pa.ScalarExpr
--- omitIfNecessary spec trefs (Pa.Identifier iAnn name) =
---     let (tName, attName) = getTableAndAttName name
---         comp = lookupAttributeComparability spec (tName, attName) trefs
---         (Just aName) = attName
---         applyIf (Just (MtTransformable _ _)) = Pa.Name A.emptyAnnotation [Pa.Nmc aName]
---         applyIf _ = name
---     in Pa.Identifier iAnn (applyIf comp)
--- omitIfNecessary _ _ expr = expr
--- 
--- -- extends the group-by clause with references to tenant keys wehre necessary, returns only the additional keys
--- extendTenantKeys :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprList -> Pa.ScalarExprList
--- extendTenantKeys spec trefs (Pa.Identifier _ name:exprs) =
---     let (tName, _)    = getTableAndAttName name
---         oldName             = getOldTableName tName trefs
---         others              = extendTenantKeys spec trefs exprs
---         addIf (Just newTName) (Just oldTName) 
---             | isGlobalTable spec oldName    = others
---             | otherwise                     = others ++ [getTenantIdentifier newTName oldTName]
---         addIf _ _ = others
---     in addIf tName oldName
--- extendTenantKeys _ _ _ = []
--- 
--- mtRewriteGroupByClause :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprList -> Pa.ScalarExprList
--- mtRewriteGroupByClause spec trefs = map (omitIfNecessary spec trefs) . (\l -> removeDuplicates (extendTenantKeys spec trefs l) ++ l)
--- 
--- mtRewriteOrderByClause :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
--- mtRewriteOrderByClause spec trefs ((expr, dir, no):list) = (omitIfNecessary spec trefs expr, dir, no) : mtRewriteOrderByClause spec trefs list
--- mtRewriteOrderByClause _ _ [] = []
+-- ommmits the table name of an attribute if necessary, this is actually the case for transformable attributre in group- and order-by clauses
+omitIfNecessary :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> Pa.ScalarExpr
+omitIfNecessary spec trefs (Pa.Identifier iAnn name) =
+    let (tName, attName) = getTableAndAttName name
+        comp = lookupAttributeComparability spec (tName, attName) trefs
+        (Just aName) = attName
+        applyIf (Just (MtTransformable _ _)) = Pa.Name A.emptyAnnotation [Pa.Nmc aName]
+        applyIf _ = name
+    in Pa.Identifier iAnn (applyIf comp)
+omitIfNecessary _ _ expr = expr
+
+-- extends the group-by clause with references to tenant keys wehre necessary (e.g. if there are tenant-specific key-attributes in group-by)
+-- returns only the additional keys which then need to be added
+extendTenantKeys :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprList -> Pa.ScalarExprList
+extendTenantKeys spec trefs (Pa.Identifier _ name:exprs) =
+    let (tName, a)  = getTableAndAttName name
+        comp        = lookupAttributeComparability spec (tName, a) trefs
+        oldName     = getOldTableName tName trefs
+        others      = extendTenantKeys spec trefs exprs
+        addIf (Just newTName) (Just oldTName) (Just MtSpecific) = others ++ [getTenantIdentifier newTName oldTName]
+        addIf _ _ _ = others
+    in addIf tName oldName comp
+extendTenantKeys _ _ _ = []
+
+mtRewriteGroupByClause :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprList -> Pa.ScalarExprList
+mtRewriteGroupByClause spec trefs = map (omitIfNecessary spec trefs) . (\l -> removeDuplicates (extendTenantKeys spec trefs l) ++ l)
+
+mtRewriteOrderByClause :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
+mtRewriteOrderByClause spec trefs ((expr, dir, no):list) = (omitIfNecessary spec trefs expr, dir, no) : mtRewriteOrderByClause spec trefs list
+mtRewriteOrderByClause _ _ [] = []
 
 mtRewriteMaybeScalarExpr :: MtSchemaSpec -> MtSetting -> Maybe Pa.ScalarExpr -> Pa.TableRefList -> Either MtRewriteError (Maybe Pa.ScalarExpr)
 mtRewriteMaybeScalarExpr spec setting (Just expr) trefs = do
@@ -496,9 +504,8 @@ mtAnnotateTrefList spec (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.JoinOn a ex
     n t h
     (head (mtAnnotateTrefList spec [tref1]))
     (Just (Pa.JoinOn a (mtAnnotateScalarExpr spec (tref0:[tref1]) expr))) : mtAnnotateTrefList spec trefs
--- NOT NEEDED AT THE MOMENT
---mtAnnotateTrefList spec (Pa.FullAlias ann tb cols tref:trefs) = Pa.FullAlias ann tb cols
---    (head (mtAnnotateTrefList spec [tref])) : mtAnnotateTrefList spec trefs
+mtAnnotateTrefList spec (Pa.FullAlias ann tb cols tref:trefs) = Pa.FullAlias ann tb cols
+    (head (mtAnnotateTrefList spec [tref])) : mtAnnotateTrefList spec trefs
 -- default case, recursively call annotation call on single item
 mtAnnotateTrefList spec (tref:trefs) = tref:mtAnnotateTrefList spec trefs
 mtAnnotateTrefList _ [] = []
@@ -556,6 +563,8 @@ mtAnnotateScalarExpr spec (Pa.Tref _ (Pa.Name _ [Pa.Nmc tname]):trefs) (Pa.Ident
             propagate False = mtAnnotateScalarExpr spec trefs (Pa.Identifier iAnn (Pa.Name a [Pa.Nmc attName]))
             propagate True  = Pa.Identifier iAnn (Pa.Name a [Pa.Nmc tname,Pa.Nmc attName])
         in  propagate contains
+mtAnnotateScalarExpr spec (Pa.JoinTref _ tref0 _ _ _ tref1 _ : trefs) expr =
+    mtAnnotateScalarExpr spec (tref0:tref1:trefs) expr
 -- for any other trefs, we still need to make sure that the rest of the trefs gets checked as well
 mtAnnotateScalarExpr spec (_:trefs) expr = mtAnnotateScalarExpr spec trefs expr
 -- default case handles anything we do not handle so far

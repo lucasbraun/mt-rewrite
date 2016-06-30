@@ -136,7 +136,7 @@ runTPCHQueries spec setting = do
         -- putStrLn $ query ++ " parses to:\n"
         -- putStrLn (show (mtParse query))
         -- putStrLn ("\n")
-        -- DEBUG
+        -- END DEBUG
         putStrLn $ query ++ " rewrites to:\n"
         let rewrittenQuery = mtRewrite spec setting query
         putStrLn (mtCompactPrint rewrittenQuery)
