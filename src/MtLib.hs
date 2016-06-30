@@ -228,6 +228,12 @@ mtRewriteTrefList spec setting (Pa.TableAlias ann tb tref:trefs) = do
     h <- mtRewriteTrefList spec setting [tref]
     t <- mtRewriteTrefList spec setting trefs
     Right $ Pa.TableAlias ann tb (head h) : t
+mtRewriteTrefList spec setting (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.JoinOn a expr)):trefs) = do
+    l <- mtRewriteTrefList spec setting [tref0]
+    r <- mtRewriteTrefList spec setting [tref1]
+    e <- mtRewriteScalarExpr spec setting expr (tref0:[tref1])
+    rest <- mtRewriteTrefList spec setting trefs
+    Right $ Pa.JoinTref ann (head l) n t h (head r) (Just (Pa.JoinOn a e)) : rest
 mtRewriteTrefList spec setting (tref:trefs) = do
     t <- mtRewriteTrefList spec setting trefs
     Right $ tref : t
@@ -391,6 +397,23 @@ mtRewriteScalarExprList spec setting (arg:args) trefs = do
     Right (newArg : newArgs)
 mtRewriteScalarExprList _ _ [] _ = Right []
 
+mtRewriteInList :: MtSchemaSpec -> MtSetting -> Pa.InList -> Pa.TableRefList -> Either MtRewriteError Pa.InList
+mtRewriteInList spec setting (Pa.InList a elist) trefs = do
+    l <- mtRewriteScalarExprList spec setting elist trefs
+    Right $ Pa.InList a l
+mtRewriteInList spec setting (Pa.InQueryExpr a sel) trefs = do
+    h <- mtRewriteQuery spec setting sel trefs
+    Right $ Pa.InQueryExpr a h
+
+type CasesType = Pa.CaseScalarExprListScalarExprPairList
+mtRewriteCases :: MtSchemaSpec -> MtSetting -> CasesType -> Pa.TableRefList -> Either MtRewriteError CasesType
+mtRewriteCases spec setting ((elist, expr):rest) trefs = do
+    h <- mtRewriteScalarExprList spec setting elist trefs
+    e <- mtRewriteScalarExpr spec setting expr trefs
+    l <- mtRewriteCases spec setting rest trefs
+    Right $ ((h, e):l)
+mtRewriteCases _ _ [] _ = Right []
+
 mtRewriteScalarExpr :: MtSchemaSpec -> MtSetting -> Pa.ScalarExpr -> Pa.TableRefList -> Either MtRewriteError Pa.ScalarExpr
 mtRewriteScalarExpr spec setting (Pa.PrefixOp ann opName arg) trefs = do
     h <- mtRewriteScalarExpr spec setting arg trefs
@@ -413,13 +436,18 @@ mtRewriteScalarExpr spec setting (Pa.Parens ann expr) trefs = do
     Right $ Pa.Parens ann h
 mtRewriteScalarExpr spec setting (Pa.InPredicate ann expr i list) trefs = do
     h <- mtRewriteScalarExpr spec setting expr trefs
-    Right $ Pa.InPredicate ann h i list
+    l <- mtRewriteInList spec setting list trefs
+    Right $ Pa.InPredicate ann h i l
 mtRewriteScalarExpr spec setting (Pa.Exists ann sel) trefs = do
     h <- mtRewriteQuery spec setting sel trefs
     Right $ Pa.Exists ann h
 mtRewriteScalarExpr spec setting (Pa.ScalarSubQuery ann sel) trefs = do
     h <- mtRewriteQuery spec setting sel trefs
     Right $ Pa.ScalarSubQuery ann h
+mtRewriteScalarExpr spec setting (Pa.Case ann cases els) trefs = do
+    c <- mtRewriteCases spec setting cases trefs
+    e <- mtRewriteMaybeScalarExpr spec setting els trefs
+    Right $ Pa.Case ann c e
 mtRewriteScalarExpr spec (c,_) (Pa.Identifier iAnn i) trefs  =
     let (tableName, attName) = getTableAndAttName i
         comparability = lookupAttributeComparability spec (tableName, attName) trefs
@@ -468,6 +496,7 @@ mtAnnotateTrefList spec (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.JoinOn a ex
     n t h
     (head (mtAnnotateTrefList spec [tref1]))
     (Just (Pa.JoinOn a (mtAnnotateScalarExpr spec (tref0:[tref1]) expr))) : mtAnnotateTrefList spec trefs
+-- NOT NEEDED AT THE MOMENT
 --mtAnnotateTrefList spec (Pa.FullAlias ann tb cols tref:trefs) = Pa.FullAlias ann tb cols
 --    (head (mtAnnotateTrefList spec [tref])) : mtAnnotateTrefList spec trefs
 -- default case, recursively call annotation call on single item
