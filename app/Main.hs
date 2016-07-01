@@ -62,8 +62,8 @@ generateTestSchema = mtSchemaSpecFromList
     ]
 
 -- TODO: something hangs here... the problem was introduced with commit 47edd65, but so far problem not identified...
-runTestQueries :: MtSchemaSpec -> MtSetting -> IO ()
-runTestQueries spec setting = do
+runTestQueries :: MtSchemaSpec -> MtSetting -> Dialect -> IO ()
+runTestQueries spec setting dialect = do
     let queries = ["SELECT * FROM Supplier;"
                     ,"SELECT * FROM Supplier WHERE S_name = ?;"
                     ,"SELECT DISTINCT S_name FROM Supplier WHERE S_acctbal > 42;"
@@ -80,19 +80,19 @@ runTestQueries spec setting = do
 
     -- test pretty print
     putStrLn "\nPretty Print with error looks like this:"
-    putStrLn $ mtPrettyPrint $ mtParse "SELECT;" -- should print an error message
+    putStrLn $ mtPrettyPrint (mtParse "SELECT;" dialect) dialect        -- should print an error message
     putStrLn "\nPretty Print for normal query looks like this:"
-    putStrLn $ mtPrettyPrint $ mtParse $ head queries -- should print something correct
+    putStrLn $ mtPrettyPrint (mtParse (head queries) dialect) dialect   -- should print something correct
     
     -- test parsing and rewrite
     mapM_ (\query -> do
         putStrLn "\n====================================================\n"
         putStrLn $ query ++ " parses to:\n"
-        let parsedQuery = mtParse query
+        let parsedQuery = mtParse query dialect
         print parsedQuery
         -- TODO: problem is somewhere here...
-        let rewrittenQuery = mtRewrite spec setting query
-        putStrLn $ "\nIts rewritten form is:\n  " ++ mtPrettyPrint rewrittenQuery
+        let rewrittenQuery = mtRewrite spec setting query dialect
+        putStrLn $ "\nIts rewritten form is:\n  " ++ mtPrettyPrint rewrittenQuery dialect
         putStrLn "and has the following syntax tree:\n"
         print rewrittenQuery 
         ) queries
@@ -100,8 +100,8 @@ runTestQueries spec setting = do
     putStrLn "\n\n"
     return ()
 
-runTPCHQueries :: MtSchemaSpec -> MtSetting -> IO ()
-runTPCHQueries spec setting = do
+runTPCHQueries :: MtSchemaSpec -> MtSetting -> Dialect -> IO ()
+runTPCHQueries spec setting dialect = do
     let queries = ["SELECT L_returnflag, L_linestatus, SUM(L_quantity) AS SUM_QTY, SUM(L_extendedprice) AS SUM_BASE_PRICE, SUM(L_extendedprice*(1-L_discount)) AS SUM_DISC_PRICE, SUM(L_extendedprice*(1-L_discount)*(1+L_tax)) AS SUM_CHARGE, AVG(L_quantity) AS AVG_QTY, AVG(L_extendedprice) AS AVG_PRICE, AVG(L_discount) AS AVG_DISC, COUNT(*) AS COUNT_ORDER FROM Lineitem WHERE L_shipdate <= '1998-09-02' GROUP BY L_returnflag, L_linestatus ORDER BY L_returnflag,L_linestatus;" -- Q01
                     ,"SELECT S_acctbal, S_name, N_name, P_partkey, P_mfgr, S_address, S_phone, S_comment FROM Part, Supplier, Partsupp, Nation, Region WHERE P_partkey = PS_partkey AND S_suppkey = PS_suppkey AND P_size = 15 AND P_type LIKE '%%BRASS' AND S_nationkey = N_nationkey AND N_regionkey = R_regionkey AND R_name = 'EUROPE' AND PS_supplycost = (SELECT MIN(PS_supplycost) FROM Partsupp, Supplier, Nation, Region WHERE P_partkey = PS_partkey AND S_suppkey = PS_suppkey AND S_nationkey = N_nationkey AND N_regionkey = R_regionkey AND R_name = 'EUROPE') ORDER BY S_acctbal DESC, N_name, S_name, P_partkey LIMIT 100;" --Q02
                     ,"SELECT L_orderkey, SUM(L_extendedprice*(1-L_discount)) AS REVENUE, O_orderdate, O_shippriority FROM Customer, Orders, Lineitem WHERE C_mktsegment = 'BUILDING' AND C_custkey = O_custkey AND L_orderkey = O_orderkey AND O_orderdate < '1995-03-15' AND L_shipdate > '1995-03-15' GROUP BY L_orderkey, O_orderdate, O_shippriority ORDER BY REVENUE DESC, O_orderdate LIMIT 10;" --Q03
@@ -134,19 +134,19 @@ runTPCHQueries spec setting = do
         putStrLn $ "Query " ++ show idx ++ "\n"
         -- DEBUG
         -- putStrLn $ query ++ " parses to:\n"
-        -- putStrLn (show (mtParse query))
+        -- putStrLn (show (mtParse query dialect))
         -- putStrLn ("\n")
         -- END DEBUG
         putStrLn $ query ++ " rewrites to:\n"
-        let rewrittenQuery = mtRewrite spec setting query
-        putStrLn (mtCompactPrint rewrittenQuery)
+        let rewrittenQuery = mtRewrite spec setting query dialect
+        putStrLn (mtCompactPrint rewrittenQuery dialect)
         ) (zip [(1::Integer)..] queries)
 
     putStrLn "\n\n"
     return ()
 
-runQueryFile :: MtSchemaSpec -> MtSetting -> (String, String) -> IO ()
-runQueryFile spec setting (infile, outfile)= do
+runQueryFile :: MtSchemaSpec -> MtSetting -> Dialect -> (String, String) -> IO ()
+runQueryFile spec setting dialect (infile, outfile)= do
     putStr $ "Reading from " ++ infile ++ " and storing results in " ++ outfile ++ "..."
 
     inputHandle <- openFile infile ReadMode
@@ -162,8 +162,8 @@ runQueryFile spec setting (infile, outfile)= do
                 hPutStrLn outputHandle query
                 return ()
             else do
-                let rewrittenQuery = mtRewrite spec setting query
-                hPutStrLn outputHandle (mtCompactPrint rewrittenQuery)
+                let rewrittenQuery = mtRewrite spec setting query dialect
+                hPutStrLn outputHandle (mtCompactPrint rewrittenQuery dialect)
                 return ()
         ) queries
 
@@ -178,33 +178,40 @@ awaitInput = do
     putStr ">> "
     return ()
 
-sessionLoop :: MtSchemaSpec -> MtSetting -> IO ()
-sessionLoop spec setting = do
+sessionLoop :: MtSchemaSpec -> MtSetting -> Dialect -> IO ()
+sessionLoop spec setting dialect = do
     putStrLn "Please write a query you want to rewrite or type 'logout'/'l' to logout or 'test' to run a set of test queries. Other options include 'tpch' to run the tpch queries and 'file <infile> <outfile>' to convert queries read from a file."
     awaitInput
     line <- getLine
     Control.Monad.unless (line == "logout" || line == "l") $
         if line == "test"
             then do
-                runTestQueries spec setting
-                sessionLoop spec setting
+                runTestQueries spec setting dialect
+                sessionLoop spec setting dialect
             else 
                 if line == "tpch"
                     then do
-                        runTPCHQueries spec setting
-                        sessionLoop spec setting
+                        runTPCHQueries spec setting dialect
+                        sessionLoop spec setting dialect
                     else do
                         let ws = words line
                         if head ws == "file"
                             then do
-                                runQueryFile spec setting (ws !! 1, ws !! 2)
-                                sessionLoop spec setting
+                                runQueryFile spec setting dialect (ws !! 1, ws !! 2)
+                                sessionLoop spec setting dialect
                             else do
 -- TODO: something hangs here... the problem was introduced with commit 47edd65, but so far problem not identified...
-                                putStrLn $ "The query parses to:\n" ++ mtPrettyPrint (mtParse line)
+                                putStrLn $ "The query parses to:\n" ++ mtPrettyPrint (mtParse line dialect) dialect
                                 -- TODO: the problem is somewhere here
-                                putStrLn $ "\nIts rewritten form is:\n  " ++ mtPrettyPrint (mtRewrite spec setting line)
-                                sessionLoop spec setting
+                                putStrLn $ "\nIts rewritten form is:\n  " ++ mtPrettyPrint (mtRewrite spec setting line dialect) dialect
+                                sessionLoop spec setting dialect
+
+getDialect :: String -> Dialect
+getDialect s
+    | s == "mssql"      = sqlServerDialect
+    | s == "postgres"   = postgresDialect
+    | s == "oracle"     = oracleDialect
+    | otherwise         = ansiDialect
 
 mainLoop :: MtSchemaSpec -> IO ()
 mainLoop spec = do
@@ -214,7 +221,7 @@ mainLoop spec = do
     Control.Monad.unless (line /= "login" && line /= "l" && line /= "test") $
         if line == "test"
             then do
-                runTestQueries spec (1, [1,42])
+                runTestQueries spec (1, [1,42]) ansiDialect
                 mainLoop spec
             else do
                 putStrLn "Please enter your client id:"
@@ -225,10 +232,13 @@ mainLoop spec = do
                 awaitInput
                 line2 <- getLine
                 let d = map read $ words line2 :: [Int]
+                putStrLn "Please enter 'mssql', 'postgres', 'oracle' for a specific dialect or nothing for ANSI SQL."
+                line3 <- getLine
+                let dialect = getDialect line3
                 putStrLn "###############################################"
-                putStrLn ("Successfully logged in with C=" ++ show c ++ " and D=" ++ show d)
+                putStrLn ("Successfully logged in with C=" ++ show c ++ " and D=" ++ show d ++ ". Dialect: " ++ show dialect)
                 putStrLn "###############################################"
-                sessionLoop spec (c,d)
+                sessionLoop spec (c,d) dialect
                 mainLoop spec
 
 main :: IO ()

@@ -18,15 +18,21 @@ module MtLib
     ,mtPrettyPrint
     ,mtCompactPrint
     ,mtRewrite
+    ,D.Dialect(..)
+    ,D.ansiDialect
+    ,D.postgresDialect
+    ,D.sqlServerDialect
+    ,D.oracleDialect
 ) where
 
 import qualified Data.Map as M
--- import qualified Data.Set as S
+-- import qualified Data.Set as S --> already imported from somewhere else
+import qualified Data.Text.Lazy as L
 
 import qualified Database.HsSqlPpp.Parse as Pa
 import qualified Database.HsSqlPpp.Annotation as A
-import qualified Data.Text.Lazy as L
 import qualified Database.HsSqlPpp.Pretty as Pr
+import qualified Database.HsSqlPpp.Dialect as D
 
 -- ##################################
 -- MT types and type classes
@@ -76,20 +82,20 @@ toMtRewriteResult :: Either Pa.ParseErrorExtra [Pa.Statement] -> MtRewriteResult
 toMtRewriteResult (Left err) = Left $ FromParseError err
 toMtRewriteResult (Right res)= Right $ head res
 
-mtParse :: String -> MtRewriteResult
-mtParse query = toMtRewriteResult $ Pa.parseStatements
-                    Pa.defaultParseFlags
+mtParse :: String -> D.Dialect -> MtRewriteResult
+mtParse query dialect = toMtRewriteResult $ Pa.parseStatements
+                    (Pa.ParseFlags dialect)
                     "source"
                     (Just (0,0))
                     (L.pack query)
 
-mtPrettyPrint :: MtRewriteResult -> String
-mtPrettyPrint (Left err) = show err
-mtPrettyPrint (Right statement) = L.unpack $ Pr.prettyStatements Pr.defaultPrettyFlags [statement]
+mtPrettyPrint :: MtRewriteResult -> D.Dialect -> String
+mtPrettyPrint (Left err) _ = show err
+mtPrettyPrint (Right statement) dialect = L.unpack $ Pr.prettyStatements (Pr.PrettyFlags dialect) [statement]
 
-mtCompactPrint :: MtRewriteResult -> String
-mtCompactPrint result =
-    let prettyResult = mtPrettyPrint result
+mtCompactPrint :: MtRewriteResult -> D.Dialect -> String
+mtCompactPrint result dialect =
+    let prettyResult = mtPrettyPrint result dialect
         clearSpaces ('\n':word) = clearSpaces (' ':word)
         clearSpaces (' ':' ':word) = clearSpaces (' ':word)
         clearSpaces (c:word) = c:clearSpaces word
@@ -111,9 +117,9 @@ mtCompactPrint result =
 -- All the other things should be deferred to optimizations
 
 -- parses a single SQL statement terminated by ;
-mtRewrite :: MtSchemaSpec -> MtSetting -> String -> MtRewriteResult
-mtRewrite spec setting statement = do
-    parsedStatement <- mtParse statement
+mtRewrite :: MtSchemaSpec -> MtSetting -> String -> D.Dialect -> MtRewriteResult
+mtRewrite spec setting statement dialect = do
+    parsedStatement <- mtParse statement dialect
     let annotatedStatement = mtAnnotateStatement spec parsedStatement
     -- Right annotatedStatement -- DEBUG
     rewrittenStatement <- mtRewriteStatement spec setting annotatedStatement
