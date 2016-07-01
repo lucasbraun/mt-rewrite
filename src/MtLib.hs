@@ -25,7 +25,7 @@ module MtLib
     ,D.oracleDialect
 ) where
 
-import qualified Data.Map as M
+-- import qualified Data.Map as M --> already imported from somewhere else
 -- import qualified Data.Set as S --> already imported from somewhere else
 import qualified Data.Text.Lazy as L
 
@@ -34,38 +34,9 @@ import qualified Database.HsSqlPpp.Annotation as A
 import qualified Database.HsSqlPpp.Pretty as Pr
 import qualified Database.HsSqlPpp.Dialect as D
 
--- ##################################
--- MT types and type classes
--- ##################################
-
-type MtFromUniversalFunc        = String
-type MtToUniversalFunc          = String
-
-data MtAttributeComparability   =
-    MtComparable
-    | MtTransformable MtToUniversalFunc MtFromUniversalFunc
-    | MtSpecific
-
-type MtAttributeName            = String
-type MtSpecificTable            = M.Map MtAttributeName MtAttributeComparability
-data MtTableSpec                = MtGlobalTable | FromMtSpecificTable MtSpecificTable
-
-type MtTableName                = String
-type MtSchemaSpec               = M.Map MtTableName MtTableSpec
-
-type MtClient                   = Int
-type MtDataSet                  = [MtClient]
-type MtSetting                  = (MtClient, MtDataSet)
-
--- ##################################
--- Type Construction helper functions
--- ##################################
-
-mtSchemaSpecFromList :: [(MtTableName, MtTableSpec)] -> MtSchemaSpec
-mtSchemaSpecFromList = M.fromList
-
-mtSpecificTableFromList :: [(MtAttributeName, MtAttributeComparability)] -> MtSpecificTable
-mtSpecificTableFromList = M.fromList
+import MtTypes
+import MtUtils
+import MtAnnotate
 
 -- ##################################
 -- Parsing and Printing
@@ -126,75 +97,6 @@ mtRewrite spec setting statement dialect = do
     Right rewrittenStatement
 
 -- helper types and functions
-type TableAttributePair = (Maybe MtTableName, Maybe MtAttributeName)
-
-getTenantAttributeName :: MtTableName -> MtAttributeName
-getTenantAttributeName s = s ++ "_TENANT_KEY"
-
--- takes a (alias of a) table name and an mt table name and constructs the corresponding identifier
-getTenantIdentifier :: String -> MtTableName -> Pa.ScalarExpr
-getTenantIdentifier tName mtName = Pa.Identifier A.emptyAnnotation $ Pa.Name A.emptyAnnotation [Pa.Nmc tName, Pa.Nmc $ getTenantAttributeName mtName]
-
-isGlobalTable :: MtSchemaSpec -> Maybe MtTableName -> Bool
-isGlobalTable spec (Just tName) =
-    let tableSpec = M.lookup tName spec
-        analyse (Just MtGlobalTable)    = True
-        analyse _                       = False
-    in analyse tableSpec
-isGlobalTable _ Nothing = True
-
--- returns old name (name before renaming) for a specific table name given the tref list
-getOldTableName :: Maybe MtTableName -> Pa.TableRefList -> Maybe MtTableName
-getOldTableName (Just tableName) (Pa.TableAlias _ (Pa.Nmc aliasName) (Pa.Tref _ (Pa.Name _ [Pa.Nmc tName])):trefs)
-    | tableName == aliasName    = Just tName
-    | otherwise                 = getOldTableName (Just tableName) trefs
-getOldTableName (Just tableName) (Pa.Tref _ (Pa.Name _ [Pa.Nmc tName]):trefs)
-    | tableName == tName    = Just tName
-    | otherwise             = getOldTableName (Just tableName) trefs
-getOldTableName (Just tableName) (Pa.JoinTref _ tref0 _ _ _ tref1 _ : trefs) = getOldTableName (Just tableName) (tref0:tref1:trefs)
-getOldTableName (Just tableName) (_:trefs) = getOldTableName (Just tableName) trefs
-getOldTableName _ [] = Nothing
-getOldTableName Nothing _ = Nothing
-
--- returns a pair (table-name, attribute-name) where both can be nothing
-getTableAndAttName :: Pa.Name -> TableAttributePair
-getTableAndAttName (Pa.Name _ nameList) =
-    let (Pa.Nmc attName) = last nameList
-        (Pa.Nmc tName)
-            | length nameList > 1   = last $ init nameList
-            | otherwise             = Pa.Nmc ""  
-        tableName
-            | not (null tName)  = Just tName
-            | otherwise         = Nothing 
-    in  (tableName, Just attName)
-getTableAndAttName (Pa.AntiName _) = (Nothing, Nothing)
-
--- returns the attribute comparability for a specific attribute if it is part of a tenant-specific table
-lookupAttributeComparability :: MtSchemaSpec -> TableAttributePair -> Pa.TableRefList -> Maybe MtAttributeComparability
-lookupAttributeComparability spec (tableName, attributeName) trefs = do
-    attName <- attributeName
-    let oldTName = getOldTableName tableName trefs
-    tName <- oldTName
-    (FromMtSpecificTable tableSpec) <- M.lookup tName spec
-    tSpec <- Just tableSpec
-    M.lookup attName tSpec
-
-printName :: Pa.Name -> String
-printName (Pa.Name _ (Pa.Nmc name:names)) = foldl (\w (Pa.Nmc n) -> w ++ "." ++ n) name names
-printName _ = ""
-
--- checks whether a string contains a certain substring
-containsString :: String -> String ->Bool
-containsString l s = containsString' l s True where
-    containsString' _ [] _          = True
-    containsString' [] _ _          = False
-    containsString' (x:xs) (y:ys) h = (y == x && containsString' xs ys False) || (h && containsString' xs (y:ys) h)
-
-removeDuplicates :: Eq a => [a] -> [a]
-removeDuplicates = foldr (\x seen ->
-    if x `elem` seen
-    then seen
-    else x : seen) []
 
 mtRewriteStatement :: MtSchemaSpec -> MtSetting -> Pa.Statement -> MtRewriteResult
 mtRewriteStatement spec setting (Pa.QueryStatement a q) = do
@@ -284,11 +186,6 @@ mtAdjustWhereClause spec (Just whereClause) trefs = do
     Right $ Just adjustedExp
 mtAdjustWhereClause _ whereClause _ = Right whereClause
 
-mtRewriteSelectList :: MtSchemaSpec -> MtSetting -> Pa.SelectList -> Pa.TableRefList -> Either MtRewriteError Pa.SelectList
-mtRewriteSelectList spec setting (Pa.SelectList ann items) trefs = do
-    t <- mtRewriteSelectItems spec setting items trefs
-    Right $ Pa.SelectList ann t
-
 -- adds tenant identifier for mt-specific predicates
 mtAdjustJoinPredicate :: MtTableName -> MtTableName -> String -> Pa.ScalarExpr -> Pa.TableRefList -> Pa.ScalarExpr
 mtAdjustJoinPredicate t0 t1 opName expr trefs =
@@ -372,6 +269,11 @@ mtRewriteMaybeScalarExpr spec setting (Just expr) trefs = do
     h <- mtRewriteScalarExpr spec setting expr trefs
     Right $ Just h
 mtRewriteMaybeScalarExpr _ _ Nothing _ = Right Nothing
+
+mtRewriteSelectList :: MtSchemaSpec -> MtSetting -> Pa.SelectList -> Pa.TableRefList -> Either MtRewriteError Pa.SelectList
+mtRewriteSelectList spec setting (Pa.SelectList ann items) trefs = do
+    t <- mtRewriteSelectItems spec setting items trefs
+    Right $ Pa.SelectList ann t
 
 mtRewriteSelectItems :: MtSchemaSpec -> MtSetting -> [Pa.SelectItem] -> Pa.TableRefList -> Either MtRewriteError [Pa.SelectItem]
 -- default case, recursively call rewrite on single item
@@ -475,106 +377,6 @@ mtRewriteScalarExpr spec (c,_) (Pa.Identifier iAnn i) trefs  =
     in Right $ rewrite comparability tableName 
 mtRewriteScalarExpr _ _ expr _ = Right expr
 
--- ##################################
--- MT Annotate
--- ##################################
-
-mtAnnotateStatement :: MtSchemaSpec -> Pa.Statement -> Pa.Statement
-mtAnnotateStatement spec (Pa.QueryStatement a q) = Pa.QueryStatement a (mtAnnotate spec q [])
-mtAnnotateStatement spec (Pa.CreateView a n c q) = Pa.CreateView a n c (mtAnnotate spec q [])
-mtAnnotateStatement _ statement = statement
-
--- make sure that every attribute of a specific table appears with its table name
--- assumes that attributes not found within the schema are from global tables
--- for the case it is used in subqueries, it also take the table refs from the outer queries into account
-mtAnnotate :: MtSchemaSpec -> Pa.QueryExpr -> Pa.TableRefList -> Pa.QueryExpr
-mtAnnotate spec (Pa.Select ann selDistinct selSelectList selTref selWhere
-    selGroupBy selHaving selOrderBy selLimit selOffset selOption) trefs =
-        let allTrefs        = selTref ++ trefs    -- ordering matters here as the first value that fits is taken
-            newSelectList   = mtAnnotateSelectList spec selTref selSelectList
-            newTrefs        = mtAnnotateTrefList spec selTref
-            newWhere        = mtAnnotateMaybeScalarExpr spec allTrefs selWhere
-            newGroupBy      = map (mtAnnotateScalarExpr spec selTref) selGroupBy
-            newHaving       = mtAnnotateMaybeScalarExpr spec selTref selHaving
-            newOrderBy      = mtAnnotateDirectionList spec selTref selOrderBy
-        in  Pa.Select ann selDistinct newSelectList newTrefs newWhere
-            newGroupBy newHaving newOrderBy selLimit selOffset selOption
--- default case handles anything we do not handle so far
-mtAnnotate _ query _ = query
-
-mtAnnotateTrefList :: MtSchemaSpec -> Pa.TableRefList -> Pa.TableRefList
-mtAnnotateTrefList spec (Pa.SubTref ann sel:trefs) = Pa.SubTref ann (mtAnnotate spec sel []) : mtAnnotateTrefList spec trefs
-mtAnnotateTrefList spec (Pa.TableAlias ann tb tref:trefs) = Pa.TableAlias ann tb (head (mtAnnotateTrefList spec [tref])) : mtAnnotateTrefList spec trefs
-mtAnnotateTrefList spec (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.JoinOn a expr)):trefs) = Pa.JoinTref ann
-    (head (mtAnnotateTrefList spec [tref0]))
-    n t h
-    (head (mtAnnotateTrefList spec [tref1]))
-    (Just (Pa.JoinOn a (mtAnnotateScalarExpr spec (tref0:[tref1]) expr))) : mtAnnotateTrefList spec trefs
-mtAnnotateTrefList spec (Pa.FullAlias ann tb cols tref:trefs) = Pa.FullAlias ann tb cols
-    (head (mtAnnotateTrefList spec [tref])) : mtAnnotateTrefList spec trefs
--- default case, recursively call annotation call on single item
-mtAnnotateTrefList spec (tref:trefs) = tref:mtAnnotateTrefList spec trefs
-mtAnnotateTrefList _ [] = []
-
-mtAnnotateSelectList :: MtSchemaSpec -> Pa.TableRefList -> Pa.SelectList -> Pa.SelectList
-mtAnnotateSelectList spec trefs (Pa.SelectList ann items) = Pa.SelectList ann (mtAnnotateSelectItems spec trefs items)
-
-mtAnnotateSelectItems :: MtSchemaSpec -> Pa.TableRefList -> [Pa.SelectItem] -> [Pa.SelectItem]
--- replaces Star Expressions with an enumeration of all attributes instead (* would also display tenant key, which is something we do not want)
-mtAnnotateSelectItems spec [Pa.Tref tAnn (Pa.Name nameAnn [Pa.Nmc tname])] [Pa.SelExp selAnn (Pa.Star starAnn)] =
-    let tableSpec = M.lookup tname spec
-        generate (Just (FromMtSpecificTable tab)) = map (\key -> Pa.SelExp selAnn (Pa.Identifier starAnn (Pa.Name starAnn [Pa.Nmc key]))) (M.keys tab)
-        generate _ = [Pa.SelExp selAnn (Pa.Star starAnn)]
-    in mtAnnotateSelectItems spec [Pa.Tref tAnn (Pa.Name nameAnn [Pa.Nmc tname])] (generate tableSpec)
--- default case, recursively call annotation call on single item
-mtAnnotateSelectItems spec trefs (item:items) = mtAnnotateSelectItem spec trefs item : mtAnnotateSelectItems spec trefs items
-mtAnnotateSelectItems _ _ [] = []
-
-mtAnnotateSelectItem :: MtSchemaSpec -> Pa.TableRefList -> Pa.SelectItem -> Pa.SelectItem
-mtAnnotateSelectItem spec trefs (Pa.SelExp ann scalExp)             = Pa.SelExp ann (mtAnnotateScalarExpr spec trefs scalExp)
-mtAnnotateSelectItem spec trefs (Pa.SelectItem ann scalExp newName) = Pa.SelectItem ann (mtAnnotateScalarExpr spec trefs scalExp) newName
-
-mtAnnotateMaybeScalarExpr :: MtSchemaSpec -> Pa.TableRefList -> Maybe Pa.ScalarExpr -> Maybe Pa.ScalarExpr
-mtAnnotateMaybeScalarExpr spec trefs (Just expr) = Just (mtAnnotateScalarExpr spec trefs expr)
-mtAnnotateMaybeScalarExpr _ _ Nothing = Nothing
-
-mtAnnotateDirectionList :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
-mtAnnotateDirectionList spec trefs ((expr, dir, no):list) = (mtAnnotateScalarExpr spec trefs expr, dir, no) : mtAnnotateDirectionList spec trefs list
-mtAnnotateDirectionList _ _ [] = []
-
-mtAnnotateScalarExpr :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> Pa.ScalarExpr
-mtAnnotateScalarExpr spec trefs (Pa.PrefixOp ann opName arg) = Pa.PrefixOp ann opName (mtAnnotateScalarExpr spec trefs arg)
-mtAnnotateScalarExpr spec trefs (Pa.PostfixOp ann opName arg) = Pa.PostfixOp ann opName (mtAnnotateScalarExpr spec trefs arg)
-mtAnnotateScalarExpr spec trefs (Pa.BinaryOp ann opName arg0 arg1) = Pa.BinaryOp ann opName
-        (mtAnnotateScalarExpr spec trefs arg0) (mtAnnotateScalarExpr spec trefs arg1)
-mtAnnotateScalarExpr spec trefs (Pa.SpecialOp ann opName args) = Pa.SpecialOp ann opName (map (mtAnnotateScalarExpr spec trefs) args)
-mtAnnotateScalarExpr spec trefs (Pa.App ann funName args) = Pa.App ann funName (map (mtAnnotateScalarExpr spec trefs) args)
-mtAnnotateScalarExpr spec trefs (Pa.Parens ann expr) = Pa.Parens ann (mtAnnotateScalarExpr spec trefs expr)
-mtAnnotateScalarExpr spec trefs (Pa.InPredicate ann expr i list) =
-    let annotateInList (Pa.InList a elist) = Pa.InList a (map (mtAnnotateScalarExpr spec trefs) elist)
-        annotateInList (Pa.InQueryExpr a sel) = Pa.InQueryExpr a (mtAnnotate spec sel trefs)
-    in  Pa.InPredicate ann (mtAnnotateScalarExpr spec trefs expr) i (annotateInList list)
-mtAnnotateScalarExpr spec trefs (Pa.Exists ann sel) = Pa.Exists ann (mtAnnotate spec sel trefs)
-mtAnnotateScalarExpr spec trefs (Pa.ScalarSubQuery ann sel) = Pa.ScalarSubQuery ann (mtAnnotate spec sel trefs)
-mtAnnotateScalarExpr spec trefs (Pa.Case ann cases els) = Pa.Case ann
-    (map (\(explist, e) -> (map (mtAnnotateScalarExpr spec trefs) explist, mtAnnotateScalarExpr spec trefs e)) cases)
-    (mtAnnotateMaybeScalarExpr spec trefs els)
-mtAnnotateScalarExpr spec (Pa.Tref _ (Pa.Name _ [Pa.Nmc tname]):trefs) (Pa.Identifier iAnn (Pa.Name a (Pa.Nmc attName:nameComps)))
-    | not (null nameComps)  = Pa.Identifier iAnn (Pa.Name a (Pa.Nmc attName : nameComps))
-    | otherwise             =
-        let tableSpec = M.lookup tname spec
-            containsAttribute (Just (FromMtSpecificTable attrMap)) aName = M.member aName attrMap 
-            containsAttribute _ _ = False
-            contains = containsAttribute tableSpec attName
-            propagate False = mtAnnotateScalarExpr spec trefs (Pa.Identifier iAnn (Pa.Name a [Pa.Nmc attName]))
-            propagate True  = Pa.Identifier iAnn (Pa.Name a [Pa.Nmc tname,Pa.Nmc attName])
-        in  propagate contains
-mtAnnotateScalarExpr spec (Pa.JoinTref _ tref0 _ _ _ tref1 _ : trefs) expr =
-    mtAnnotateScalarExpr spec (tref0:tref1:trefs) expr
--- for any other trefs, we still need to make sure that the rest of the trefs gets checked as well
-mtAnnotateScalarExpr spec (_:trefs) expr = mtAnnotateScalarExpr spec trefs expr
--- default case handles anything we do not handle so far
-mtAnnotateScalarExpr _ _ expr = expr
 
 -- ##################################
 -- MT Optimizer
