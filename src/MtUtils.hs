@@ -26,12 +26,12 @@ getTenantAttributeName s = s ++ "_TENANT_KEY"
 getTenantIdentifier :: String -> MtTableName -> Pa.ScalarExpr
 getTenantIdentifier tName mtName = Pa.Identifier A.emptyAnnotation $ Pa.Name A.emptyAnnotation [Pa.Nmc tName, Pa.Nmc $ getTenantAttributeName mtName]
 
--- checks whehter a table is global according to the schema spec
+-- checks whehter a table is global. Assumes anything not in the schema spec is also global
 isGlobalTable :: MtSchemaSpec -> Maybe MtTableName -> Bool
 isGlobalTable spec (Just tName) =
     let tableSpec = M.lookup tName spec
-        analyse (Just MtGlobalTable)    = True
-        analyse _                       = False
+        analyse (Just (FromMtSpecificTable _))  = False
+        analyse _                               = True
     in analyse tableSpec
 isGlobalTable _ Nothing = True
 
