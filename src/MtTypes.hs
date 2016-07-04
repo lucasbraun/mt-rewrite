@@ -9,19 +9,22 @@ module MtTypes (
     ,MtSchemaSpec
     ,MtClient
     ,MtDataSet
+    ,MtOptimization(..)
     ,MtSetting
+    ,mtOptimizationsFromList
     ,mtSchemaSpecFromList
     ,mtSpecificTableFromList
 ) where
 
 import qualified Data.Map as M
+import qualified Data.Set as S
 
 type MtFromUniversalFunc        = String
 type MtToUniversalFunc          = String
 
 data MtAttributeComparability   =
     MtComparable
-    | MtTransformable MtToUniversalFunc MtFromUniversalFunc
+    | MtConvertible MtToUniversalFunc MtFromUniversalFunc
     | MtSpecific
 
 type MtAttributeName            = String
@@ -33,7 +36,12 @@ type MtSchemaSpec               = M.Map MtTableName MtTableSpec
 
 type MtClient                   = Int
 type MtDataSet                  = [MtClient]
-type MtSetting                  = (MtClient, MtDataSet)
+data MtOptimization             = MtTrivialOptimization | MtClientPresentationPushUp | MtConversionPushUp
+                                    | MtConversionDistribution | MtUnknownOptimization deriving (Eq,Ord,Show)
+type MtSetting                  = (MtClient, MtDataSet, S.Set MtOptimization)
+
+mtOptimizationsFromList :: [MtOptimization] -> S.Set MtOptimization
+mtOptimizationsFromList = S.fromList
 
 mtSchemaSpecFromList :: [(MtTableName, MtTableSpec)] -> MtSchemaSpec
 mtSchemaSpecFromList = M.fromList

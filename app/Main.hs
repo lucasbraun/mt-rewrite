@@ -1,65 +1,11 @@
 module Main where
 
-import MtLib
 import Control.Monad
 import System.IO
+import qualified Data.Set as S
 
-generateCustomerTable :: MtSpecificTable
-generateCustomerTable = mtSpecificTableFromList
-    [("C_custkey"   , MtSpecific)
-    ,("C_name"      , MtComparable)
-    ,("C_address"   , MtComparable)
-    ,("C_nationkey" , MtComparable)
-    ,("C_phone"     , MtTransformable "phoneToUniversal" "phoneFromUniversal")
-    ,("C_acctbal"   , MtTransformable "currencyToUniversal" "currencyFromUniversal")
-    ,("C_mktsegment", MtComparable)
-    ,("C_comment"   , MtComparable)
-    ]
-
-generateOrdersTable :: MtSpecificTable
-generateOrdersTable = mtSpecificTableFromList
-    [("O_orderkey"      , MtSpecific)
-    ,("O_custkey"       , MtSpecific)
-    ,("O_orderstatus"   , MtComparable)
-    ,("O_totalprice"    , MtTransformable "currencyToUniversal" "currencyFromUniversal")
-    ,("O_orderdate"     , MtComparable)
-    ,("O_orderpriority" , MtComparable)
-    ,("O_clerk"         , MtComparable)
-    ,("O_shippriority"  , MtComparable)
-    ,("O_comment"       , MtComparable)
-    ]
-
-generateLineitemTable :: MtSpecificTable
-generateLineitemTable = mtSpecificTableFromList
-  [("L_orderkey"        , MtSpecific)
-  ,("L_partkey"         , MtComparable)
-  ,("L_suppkey"         , MtComparable)
-  ,("L_linenumber"      , MtComparable)
-  ,("L_quantity"        , MtComparable)
-  ,("L_extendedprice"   , MtTransformable "currencyToUniversal" "currencyFromUniversal")
-  ,("L_discount"        , MtComparable)
-  ,("L_tax"             , MtComparable)
-  ,("L_returnflag"      , MtComparable)
-  ,("L_linestatus"      , MtComparable)
-  ,("L_shipdate"        , MtComparable)
-  ,("L_commitdate"      , MtComparable)
-  ,("L_receiptdate"     , MtComparable)
-  ,("L_shipinstruct"    , MtComparable)
-  ,("L_shipmode"        , MtComparable)
-  ,("L_comment"         , MtComparable)
-  ]
-
-generateTestSchema :: MtSchemaSpec
-generateTestSchema = mtSchemaSpecFromList
-    [("Region", MtGlobalTable)
-    ,("Nation", MtGlobalTable)
-    ,("Part", MtGlobalTable)
-    ,("Supplier", MtGlobalTable)
-    ,("Partsupp", MtGlobalTable)
-    ,("Customer", FromMtSpecificTable generateCustomerTable)
-    ,("Orders", FromMtSpecificTable generateOrdersTable)
-    ,("Lineitem", FromMtSpecificTable generateLineitemTable)
-    ]
+import MtLib
+import TPCHSchema
 
 -- TODO: something hangs here... the problem was introduced with commit 47edd65, but so far problem not identified...
 runTestQueries :: MtSchemaSpec -> MtSetting -> Dialect -> IO ()
@@ -213,6 +159,16 @@ getDialect s
     | s == "oracle"     = oracleDialect
     | otherwise         = ansiDialect
 
+getOptimizations :: String -> S.Set MtOptimization
+getOptimizations s =
+    let ws      = words s
+        f "t"   = MtTrivialOptimization
+        f "p"   = MtClientPresentationPushUp
+        f "c"   = MtConversionPushUp
+        f "d"   = MtConversionDistribution
+        f _     = MtUnknownOptimization
+    in mtOptimizationsFromList $ map f ws
+
 mainLoop :: MtSchemaSpec -> IO ()
 mainLoop spec = do
     putStrLn "Please write 'login'/'l'to login, 'test' to run a test for C=1 and D=[1,42], or any other word to quit "
@@ -221,7 +177,9 @@ mainLoop spec = do
     Control.Monad.unless (line /= "login" && line /= "l" && line /= "test") $
         if line == "test"
             then do
-                runTestQueries spec (1, [1,42]) ansiDialect
+                runTestQueries spec (1, [1,42],
+                    (mtOptimizationsFromList [MtTrivialOptimization, MtClientPresentationPushUp, MtConversionPushUp, MtConversionDistribution]))
+                    ansiDialect
                 mainLoop spec
             else do
                 putStrLn "Please enter your client id:"
@@ -235,15 +193,21 @@ mainLoop spec = do
                 putStrLn "Please enter 'mssql', 'postgres', 'oracle' for a specific dialect or nothing for ANSI SQL."
                 line3 <- getLine
                 let dialect = getDialect line3
+                putStrLn "Please enter a number of optimization passes as characters, separated by spaces. Options include:"
+                putStrLn ("'t' (trivial optimizations), 'p' (client presentation push-up),"
+                    ++ "'c' (client conversion push-up), 'd' (conversion distribution)")
+                line4 <- getLine
+                let o = getOptimizations line4
                 putStrLn "###############################################"
-                putStrLn ("Successfully logged in with C=" ++ show c ++ " and D=" ++ show d ++ ". Dialect: " ++ show dialect)
+                putStrLn ("Successfully logged in with C=" ++ show c ++ " and D=" ++ show d ++ ".")
+                putStrLn ("Dialect: " ++ diName dialect ++ ", Optimizations: " ++ show o)
                 putStrLn "###############################################"
-                sessionLoop spec (c,d) dialect
+                sessionLoop spec (c,d,o) dialect
                 mainLoop spec
 
 main :: IO ()
 main = do
-    let schemaSpec = generateTestSchema
+    let schemaSpec = generateTPCHSchema
     mainLoop schemaSpec
     return ()
  

@@ -10,8 +10,10 @@ module MtLib
     ,MtSchemaSpec
     ,MtClient
     ,MtDataSet
+    ,MtOptimization(..)
     ,MtSetting
     ,MtRewriteResult
+    ,mtOptimizationsFromList
     ,mtSchemaSpecFromList
     ,mtSpecificTableFromList
     ,mtParse
@@ -109,16 +111,16 @@ mtRewriteStatement _ _ statement = Right statement
 
 -- the main rewrite function, for the case it is used in subqueries, it takes also the table refs from the outer queries into account
 mtRewriteQuery :: MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError Pa.QueryExpr
-mtRewriteQuery spec (c,d) (Pa.Select ann selDistinct selSelectList selTref selWhere
+mtRewriteQuery spec (c,d,o) (Pa.Select ann selDistinct selSelectList selTref selWhere
     selGroupBy selHaving selOrderBy selLimit selOffset selOption) trefs = do
         let allTrefs      = selTref ++ trefs    -- ordering matters here as the first value that fits is taken
-        newTrefs         <- mtRewriteTrefList spec (c,d) selTref
-        newSelectList    <- mtRewriteSelectList spec (c,d) selSelectList selTref
+        newTrefs         <- mtRewriteTrefList spec (c,d,o) selTref
+        newSelectList    <- mtRewriteSelectList spec (c,d,o) selSelectList selTref
         adjustedWhere    <- mtAdjustWhereClause spec selWhere allTrefs -- adds predicates on tenant keys
-        transformedWhere <- mtRewriteMaybeScalarExpr spec (c,d) adjustedWhere allTrefs -- adds transformation functions
-        let filteredWhere = mtFilterWhereClause spec d selTref transformedWhere -- adds D-filters
+        convertedWhere   <- mtRewriteMaybeScalarExpr spec (c,d,o) adjustedWhere allTrefs -- adds conversion functions
+        let filteredWhere = mtFilterWhereClause spec d selTref convertedWhere -- adds D-filters
         let newGroupBy    = mtRewriteGroupByClause spec selTref selGroupBy
-        newHaving        <- mtRewriteMaybeScalarExpr spec (c,d) selHaving selTref
+        newHaving        <- mtRewriteMaybeScalarExpr spec (c,d,o) selHaving selTref
         let newOrderBy    = mtRewriteOrderByClause spec selTref selOrderBy
         Right $ Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
             newGroupBy
@@ -137,14 +139,14 @@ mtRewriteTrefList spec setting (Pa.TableAlias ann tb tref:trefs) = do
     h <- mtRewriteTrefList spec setting [tref]
     t <- mtRewriteTrefList spec setting trefs
     Right $ Pa.TableAlias ann tb (head h) : t
-mtRewriteTrefList spec (c,d) (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.JoinOn a expr)):trefs) = do
-    l <- mtRewriteTrefList spec (c,d) [tref0]
-    r <- mtRewriteTrefList spec (c,d) [tref1]
+mtRewriteTrefList spec (c,d,o) (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.JoinOn a expr)):trefs) = do
+    l <- mtRewriteTrefList spec (c,d,o) [tref0]
+    r <- mtRewriteTrefList spec (c,d,o) [tref1]
     let allTrefs = [tref0, tref1]
     (Just adjusted) <- mtAdjustWhereClause spec (Just expr) allTrefs
-    transformed <- mtRewriteScalarExpr spec (c,d) adjusted allTrefs
-    let (Just filtered) = mtFilterWhereClause spec d allTrefs (Just transformed)
-    rest <- mtRewriteTrefList spec (c,d) trefs
+    converted <- mtRewriteScalarExpr spec (c,d,o) adjusted allTrefs
+    let (Just filtered) = mtFilterWhereClause spec d allTrefs (Just converted)
+    rest <- mtRewriteTrefList spec (c,d,o) trefs
     Right $ Pa.JoinTref ann (head l) n t h (head r) (Just (Pa.JoinOn a filtered)) : rest
 mtRewriteTrefList spec setting (Pa.FullAlias ann tb cols tref:trefs) = do
     h <- mtRewriteTrefList spec setting [tref]
@@ -233,13 +235,13 @@ mtFilterWhereClause :: MtSchemaSpec -> MtDataSet -> Pa.TableRefList -> Maybe Pa.
 mtFilterWhereClause spec ds (tref:trefs) whereClause = mtFilterWhereClause spec ds trefs (addDFilter spec ds tref whereClause Nothing)
 mtFilterWhereClause _ _ [] whereClause = whereClause
 
--- ommmits the table name of an attribute if necessary, this is actually the case for transformable attributre in group- and order-by clauses
+-- ommmits the table name of an attribute if necessary, this is actually the case for convertible attributre in group- and order-by clauses
 omitIfNecessary :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> Pa.ScalarExpr
 omitIfNecessary spec trefs (Pa.Identifier iAnn name) =
     let (tName, attName) = getTableAndAttName name
         comp = lookupAttributeComparability spec (tName, attName) trefs
         (Just aName) = attName
-        applyIf (Just (MtTransformable _ _)) = Pa.Name A.emptyAnnotation [Pa.Nmc aName]
+        applyIf (Just (MtConvertible _ _)) = Pa.Name A.emptyAnnotation [Pa.Nmc aName]
         applyIf _ = name
     in Pa.Identifier iAnn (applyIf comp)
 omitIfNecessary _ _ expr = expr
@@ -364,10 +366,10 @@ mtRewriteScalarExpr spec setting (Pa.Case ann cases els) trefs = do
     c <- mtRewriteCases spec setting cases trefs
     e <- mtRewriteMaybeScalarExpr spec setting els trefs
     Right $ Pa.Case ann c e
-mtRewriteScalarExpr spec (c,_) (Pa.Identifier iAnn i) trefs  =
+mtRewriteScalarExpr spec (c,_,_) (Pa.Identifier iAnn i) trefs  =
     let (tableName, attName) = getTableAndAttName i
         comparability = lookupAttributeComparability spec (tableName, attName) trefs
-        rewrite (Just (MtTransformable to from)) (Just tName) =
+        rewrite (Just (MtConvertible to from)) (Just tName) =
             let (Just oldTName) = getOldTableName (Just tName) trefs
             in  Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])
                     [Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to])
@@ -385,13 +387,13 @@ mtRewriteScalarExpr _ _ expr _ = Right expr
 -- Some preliminary ideas for optimizer steps
 -- Observations:
 --      - some optimizations should happen in conjunction with rewrite (i) (iv)
---      - some optimizations need transformation provenance (iv) to (vi)
+--      - some optimizations need conversion provenance (iv) to (vi)
 --
--- (i)      D=C optimization ==> only filter at the bottom level, rest of the query looks the same, no transformation needed
+-- (i)      D=C optimization ==> only filter at the bottom level, rest of the query looks the same, no conversion needed
 -- (ii)     |D| = 1: similar to i), but additionally requires a final presentation to client view at the uppermost select
--- (iii)    Client Presentation push-up: push-up transformation to client format to the uppermost select
+-- (iii)    Client Presentation push-up: push-up conversion to client format to the uppermost select
 --          --> comparisons are always done in universal format, constants need to be brought into universal format as well
--- (iv)     Transformation push-up: do comparisons in owner's format --> needs to transform constant twice --> only transform on joins or aggregations
+-- (iv)     Conversion push-up: do comparisons in owner's format --> needs to convert constant twice --> only convert on joins or aggregations
 -- (v)      Aggregation distribution: if possible, compute partial aggregations on different client formats and then only transfrom these partial results
--- (vi)     Statistical aggregation optimization: if (v) not possible: figure out in (intermediary) formats to transform values (essentially equivalent to join ordering and site selection in distributed query processing
+-- (vi)     Statistical aggregation optimization: if (v) not possible: figure out in (intermediary) formats to convert values (essentially equivalent to join ordering and site selection in distributed query processing
 
