@@ -10,6 +10,7 @@ module MtTypes (
     ,MtClient
     ,MtDataSet
     ,MtOptimization(..)
+    ,MtOptimizationSet
     ,MtSetting
     ,mtOptimizationsFromList
     ,mtSchemaSpecFromList
@@ -46,6 +47,7 @@ data MtOptimization             =     MtTrivialOptimization         -- if |C|=1,
                                     deriving (Eq,Ord,Show)
 -- there are more comments about optimizations in MtLib.hs...
 
+type MtOptimizationSet          = S.Set MtOptimization
 type MtSetting                  = (MtClient, MtDataSet, S.Set MtOptimization)
 
 mtOptimizationsFromList :: [MtOptimization] -> S.Set MtOptimization

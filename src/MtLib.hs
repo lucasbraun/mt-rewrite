@@ -11,6 +11,7 @@ module MtLib
     ,MtClient
     ,MtDataSet
     ,MtOptimization(..)
+    ,MtOptimizationSet
     ,MtSetting
     ,MtRewriteResult
     ,mtOptimizationsFromList
@@ -27,8 +28,6 @@ module MtLib
     ,D.oracleDialect
 ) where
 
--- import qualified Data.Map as M --> already imported from somewhere else
--- import qualified Data.Set as S --> already imported from somewhere else
 import qualified Data.Text.Lazy as L
 
 import qualified Database.HsSqlPpp.Parse as Pa
@@ -115,10 +114,10 @@ mtRewriteQuery spec (c,d,o) (Pa.Select ann selDistinct selSelectList selTref sel
     selGroupBy selHaving selOrderBy selLimit selOffset selOption) trefs = do
         let allTrefs      = selTref ++ trefs    -- ordering matters here as the first value that fits is taken
         newTrefs         <- mtRewriteTrefList spec (c,d,o) selTref
-        newSelectList    <- mtRewriteSelectList spec (c,d,o) selSelectList selTref
-        adjustedWhere    <- mtAdjustWhereClause spec selWhere allTrefs -- adds predicates on tenant keys
+        adjustedWhere    <- mtAdjustWhereClause spec (c,d,o) selWhere allTrefs -- adds predicates on tenant keys
         convertedWhere   <- mtRewriteMaybeScalarExpr spec (c,d,o) adjustedWhere allTrefs -- adds conversion functions
         let filteredWhere = mtFilterWhereClause spec d selTref convertedWhere -- adds D-filters
+        newSelectList    <- mtRewriteSelectList spec (c,d,o) selSelectList selTref
         let newGroupBy    = mtRewriteGroupByClause spec selTref selGroupBy
         newHaving        <- mtRewriteMaybeScalarExpr spec (c,d,o) selHaving selTref
         let newOrderBy    = mtRewriteOrderByClause spec selTref selOrderBy
@@ -143,7 +142,7 @@ mtRewriteTrefList spec (c,d,o) (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.Join
     l <- mtRewriteTrefList spec (c,d,o) [tref0]
     r <- mtRewriteTrefList spec (c,d,o) [tref1]
     let allTrefs = [tref0, tref1]
-    (Just adjusted) <- mtAdjustWhereClause spec (Just expr) allTrefs
+    (Just adjusted) <- mtAdjustWhereClause spec (c,d,o) (Just expr) allTrefs
     converted <- mtRewriteScalarExpr spec (c,d,o) adjusted allTrefs
     let (Just filtered) = mtFilterWhereClause spec d allTrefs (Just converted)
     rest <- mtRewriteTrefList spec (c,d,o) trefs
@@ -159,11 +158,16 @@ mtRewriteTrefList _ _ [] = Right []
 
 -- checks the join predicates and adds necessary constraints
 -- right now only checks simple (non-nested and non-complex) join predicates
-mtAdjustWhereClause :: MtSchemaSpec -> Maybe Pa.ScalarExpr -> Pa.TableRefList-> Either MtRewriteError (Maybe Pa.ScalarExpr)
-mtAdjustWhereClause spec (Just whereClause) trefs = do
-    adjustedExp <- mtAdjustScalarExpr spec whereClause trefs
-    Right $ Just adjustedExp
-mtAdjustWhereClause _ whereClause _ = Right whereClause
+mtAdjustWhereClause :: MtSchemaSpec -> MtSetting -> Maybe Pa.ScalarExpr -> Pa.TableRefList -> Either MtRewriteError (Maybe Pa.ScalarExpr)
+mtAdjustWhereClause spec (_,d,o) (Just whereClause) trefs =
+    if MtTrivialOptimization `elem` o && (length d == 1)
+        then
+            Right $ Just whereClause
+        else do
+            adjustedExp <- mtAdjustScalarExpr spec whereClause trefs
+            Right $ Just adjustedExp
+mtAdjustWhereClause _ _ whereClause _ = Right whereClause
+        --
 
 -- adds tenant identifier for mt-specific predicates
 mtAdjustJoinPredicate :: MtTableName -> MtTableName -> String -> Pa.ScalarExpr -> Pa.TableRefList -> Pa.ScalarExpr
@@ -207,6 +211,11 @@ mtAdjustScalarExpr spec (Pa.PrefixOp ann opName arg) trefs= do
     Right $ Pa.PrefixOp ann opName h
 mtAdjustScalarExpr _ expr _ = Right expr
 
+-- adds the necessary dataset filter to a where clause
+mtFilterWhereClause :: MtSchemaSpec -> MtDataSet -> Pa.TableRefList -> Maybe Pa.ScalarExpr  -> Maybe Pa.ScalarExpr
+mtFilterWhereClause spec ds (tref:trefs) whereClause = mtFilterWhereClause spec ds trefs (addDFilter spec ds tref whereClause Nothing)
+mtFilterWhereClause _ _ [] whereClause = whereClause
+
 -- adds a dataset filter for a specific table to an existing where predicate
 -- only adds filter for tables that are tenant-specific
 -- only adds filter if dataset length > 0 (an empty dataset means we query everything)
@@ -218,7 +227,7 @@ addDFilter spec ds (Pa.Tref _ (Pa.Name nAnn nameList)) whereClause priorName =
         newName Nothing     = tName
         inPred
             | isGlobal                  = Nothing
-            | null ds == 0          = Nothing
+            | null ds                   = Nothing
             | otherwise                 = Just $ Pa.InPredicate nAnn (getTenantIdentifier (newName priorName) tName) True
                                             (Pa.InList A.emptyAnnotation (map (Pa.NumberLit A.emptyAnnotation . show) ds))
         addTo (Just expr) (Just pr)     = Just $ Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "and"]) expr pr
@@ -232,12 +241,7 @@ addDFilter spec ds (Pa.TableAlias _ (Pa.Nmc newName) tref) whereClause priorName
     in  addDFilter spec ds tref whereClause (Just $ computeFinalName priorName)
 addDFilter _ _ _ whereClause _ = whereClause
 
--- adds the necessary dataset filter to a where clause
-mtFilterWhereClause :: MtSchemaSpec -> MtDataSet -> Pa.TableRefList -> Maybe Pa.ScalarExpr  -> Maybe Pa.ScalarExpr
-mtFilterWhereClause spec ds (tref:trefs) whereClause = mtFilterWhereClause spec ds trefs (addDFilter spec ds tref whereClause Nothing)
-mtFilterWhereClause _ _ [] whereClause = whereClause
-
--- ommmits the table name of an attribute if necessary, this is actually the case for convertible attributre in group- and order-by clauses
+-- ommmits the table name of an attribute if necessary, this is actually the case for convertible attributes in group- and order-by clauses
 omitIfNecessary :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> Pa.ScalarExpr
 omitIfNecessary spec trefs (Pa.Identifier iAnn name) =
     let (tName, attName) = getTableAndAttName name
@@ -289,6 +293,7 @@ mtRewriteSelectItems _ _ [] _ = Right []
 mtRewriteSelectItem :: MtSchemaSpec -> MtSetting -> Pa.SelectItem -> Pa.TableRefList -> Either MtRewriteError Pa.SelectItem
 mtRewriteSelectItem spec setting (Pa.SelExp ann scalExp) trefs = do
     newExp <- mtRewriteScalarExpr spec setting scalExp trefs
+    -- 'create' makes sure that a converted attribute gets renamed to its original name
     let create (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
                 [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
                     [Pa.Identifier a4 i, arg0]
@@ -367,17 +372,17 @@ mtRewriteScalarExpr spec setting (Pa.Case ann cases els) trefs = do
     c <- mtRewriteCases spec setting cases trefs
     e <- mtRewriteMaybeScalarExpr spec setting els trefs
     Right $ Pa.Case ann c e
-mtRewriteScalarExpr spec (c,_,_) (Pa.Identifier iAnn i) trefs  =
+mtRewriteScalarExpr spec (c,d,o) (Pa.Identifier iAnn i) trefs  =
     let (tableName, attName) = getTableAndAttName i
         comparability = lookupAttributeComparability spec (tableName, attName) trefs
-        rewrite (Just (MtConvertible to from)) (Just tName) =
+        rewrite (Just (MtConvertible to from)) (Just tName) False =
             let (Just oldTName) = getOldTableName (Just tName) trefs
             in  Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])
                     [Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to])
                         [Pa.Identifier iAnn i, getTenantIdentifier tName oldTName]
                     ,Pa.NumberLit iAnn (show c)]
-        rewrite _ _ = Pa.Identifier iAnn i
-    in Right $ rewrite comparability tableName 
+        rewrite _ _ _ = Pa.Identifier iAnn i
+    in Right $ rewrite comparability tableName (MtTrivialOptimization `elem` o && (length d == 1) && (head d == c))
 mtRewriteScalarExpr _ _ expr _ = Right expr
 
 

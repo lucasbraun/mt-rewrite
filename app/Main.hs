@@ -2,7 +2,6 @@ module Main where
 
 import Control.Monad
 import System.IO
-import qualified Data.Set as S
 
 import MtLib
 import TPCHSchema
@@ -159,7 +158,7 @@ getDialect s
     | s == "oracle"     = oracleDialect
     | otherwise         = ansiDialect
 
-getOptimizations :: String -> S.Set MtOptimization
+getOptimizations :: String -> MtOptimizationSet
 getOptimizations s =
     let ws      = words s
         f "t"   = MtTrivialOptimization
