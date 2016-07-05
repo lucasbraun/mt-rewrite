@@ -186,7 +186,7 @@ mainLoop spec = do
                 awaitInput
                 line1 <- getLine
                 let c = read line1 :: Int
-                putStrLn "Please enter your dataset as space-separated tenant ids:"
+                putStrLn "Please enter your dataset as space-separated tenant ids (empty means: query everything):"
                 awaitInput
                 line2 <- getLine
                 let d = map read $ words line2 :: [Int]

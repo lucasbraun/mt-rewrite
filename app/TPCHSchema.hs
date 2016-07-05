@@ -2,7 +2,7 @@ module TPCHSchema (
     generateTPCHSchema
 ) where
 
-import MtTypes
+import MtLib
 
 generateCustomerTable :: MtSpecificTable
 generateCustomerTable = mtSpecificTableFromList

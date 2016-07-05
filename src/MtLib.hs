@@ -126,8 +126,8 @@ mtRewriteQuery spec (c,d,o) (Pa.Select ann selDistinct selSelectList selTref sel
             newGroupBy
             newHaving
             newOrderBy
-            selLimit selOffset selOption
 -- default case handles anything we do not handle so far
+            selLimit selOffset selOption
 mtRewriteQuery _ _ query _ = Right query
 
 mtRewriteTrefList :: MtSchemaSpec -> MtSetting -> Pa.TableRefList -> Either MtRewriteError Pa.TableRefList
@@ -156,29 +156,6 @@ mtRewriteTrefList spec setting (tref:trefs) = do
     t <- mtRewriteTrefList spec setting trefs
     Right $ tref : t
 mtRewriteTrefList _ _ [] = Right []
-
--- adds a dataset filter for a specific table to an existing where predicate
--- only adds filter for tables that are tenant-specific
-addDFilter :: MtSchemaSpec -> MtDataSet -> Pa.TableRef -> Maybe Pa.ScalarExpr -> Maybe MtTableName -> Maybe Pa.ScalarExpr
-addDFilter spec ds (Pa.Tref _ (Pa.Name nAnn nameList)) whereClause priorName =
-    let (Pa.Nmc tName)      = last nameList
-        isGlobal            = isGlobalTable spec (Just tName)
-        newName (Just n)    = n
-        newName Nothing     = tName
-        inPred
-            | isGlobal                  = Nothing
-            | otherwise                 = Just $ Pa.InPredicate nAnn (getTenantIdentifier (newName priorName) tName) True
-                                            (Pa.InList A.emptyAnnotation (map (Pa.NumberLit A.emptyAnnotation . show) ds))
-        addTo (Just expr) (Just pr)     = Just $ Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "and"]) expr pr
-        addTo Nothing (Just pr)         = Just pr
-        addTo (Just expr) Nothing       = Just expr
-        addTo Nothing Nothing           = Nothing
-    in addTo whereClause inPred
-addDFilter spec ds (Pa.TableAlias _ (Pa.Nmc newName) tref) whereClause priorName =
-    let finalName (Just n)  = n
-        finalName Nothing   = newName
-    in  addDFilter spec ds tref whereClause (Just $ finalName priorName)
-addDFilter _ _ _ whereClause _ = whereClause
 
 -- checks the join predicates and adds necessary constraints
 -- right now only checks simple (non-nested and non-complex) join predicates
@@ -230,6 +207,31 @@ mtAdjustScalarExpr spec (Pa.PrefixOp ann opName arg) trefs= do
     Right $ Pa.PrefixOp ann opName h
 mtAdjustScalarExpr _ expr _ = Right expr
 
+-- adds a dataset filter for a specific table to an existing where predicate
+-- only adds filter for tables that are tenant-specific
+-- only adds filter if dataset length > 0 (an empty dataset means we query everything)
+addDFilter :: MtSchemaSpec -> MtDataSet -> Pa.TableRef -> Maybe Pa.ScalarExpr -> Maybe MtTableName -> Maybe Pa.ScalarExpr
+addDFilter spec ds (Pa.Tref _ (Pa.Name nAnn nameList)) whereClause priorName =
+    let (Pa.Nmc tName)      = last nameList
+        isGlobal            = isGlobalTable spec (Just tName)
+        newName (Just n)    = n
+        newName Nothing     = tName
+        inPred
+            | isGlobal                  = Nothing
+            | (length ds) == 0          = Nothing
+            | otherwise                 = Just $ Pa.InPredicate nAnn (getTenantIdentifier (newName priorName) tName) True
+                                            (Pa.InList A.emptyAnnotation (map (Pa.NumberLit A.emptyAnnotation . show) ds))
+        addTo (Just expr) (Just pr)     = Just $ Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "and"]) expr pr
+        addTo Nothing (Just pr)         = Just pr
+        addTo (Just expr) Nothing       = Just expr
+        addTo Nothing Nothing           = Nothing
+    in addTo whereClause inPred
+addDFilter spec ds (Pa.TableAlias _ (Pa.Nmc newName) tref) whereClause priorName =
+    let computeFinalName (Just n)       = n
+        computeFinalName Nothing        = newName
+    in  addDFilter spec ds tref whereClause (Just $ computeFinalName priorName)
+addDFilter _ _ _ whereClause _ = whereClause
+
 -- adds the necessary dataset filter to a where clause
 mtFilterWhereClause :: MtSchemaSpec -> MtDataSet -> Pa.TableRefList -> Maybe Pa.ScalarExpr  -> Maybe Pa.ScalarExpr
 mtFilterWhereClause spec ds (tref:trefs) whereClause = mtFilterWhereClause spec ds trefs (addDFilter spec ds tref whereClause Nothing)
@@ -278,7 +280,6 @@ mtRewriteSelectList spec setting (Pa.SelectList ann items) trefs = do
     Right $ Pa.SelectList ann t
 
 mtRewriteSelectItems :: MtSchemaSpec -> MtSetting -> [Pa.SelectItem] -> Pa.TableRefList -> Either MtRewriteError [Pa.SelectItem]
--- default case, recursively call rewrite on single item
 mtRewriteSelectItems spec setting (item:items) trefs = do
     h <- mtRewriteSelectItem spec setting item trefs
     t <- mtRewriteSelectItems spec setting items trefs
