@@ -218,7 +218,7 @@ addDFilter spec ds (Pa.Tref _ (Pa.Name nAnn nameList)) whereClause priorName =
         newName Nothing     = tName
         inPred
             | isGlobal                  = Nothing
-            | (length ds) == 0          = Nothing
+            | null ds == 0          = Nothing
             | otherwise                 = Just $ Pa.InPredicate nAnn (getTenantIdentifier (newName priorName) tName) True
                                             (Pa.InList A.emptyAnnotation (map (Pa.NumberLit A.emptyAnnotation . show) ds))
         addTo (Just expr) (Just pr)     = Just $ Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "and"]) expr pr
@@ -330,7 +330,7 @@ mtRewriteCases spec setting ((elist, expr):rest) trefs = do
     h <- mtRewriteScalarExprList spec setting elist trefs
     e <- mtRewriteScalarExpr spec setting expr trefs
     l <- mtRewriteCases spec setting rest trefs
-    Right $ ((h, e):l)
+    Right ((h, e):l)
 mtRewriteCases _ _ [] _ = Right []
 
 mtRewriteScalarExpr :: MtSchemaSpec -> MtSetting -> Pa.ScalarExpr -> Pa.TableRefList -> Either MtRewriteError Pa.ScalarExpr

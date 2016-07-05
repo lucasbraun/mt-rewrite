@@ -102,9 +102,9 @@ runQueryFile spec setting dialect (infile, outfile)= do
 
     mapM_ (\query -> do
         let ws = words query
-        if head (head ws) == '-'
+        if (head (head ws) == '-') || (head (head ws) == '\\')
             then do
-                -- it is just a comment --> leave as is
+                -- it is just a comment or a pg command --> leave as is
                 hPutStrLn outputHandle query
                 return ()
             else do
@@ -178,7 +178,7 @@ mainLoop spec = do
         if line == "test"
             then do
                 runTestQueries spec (1, [1,42],
-                    (mtOptimizationsFromList [MtTrivialOptimization, MtClientPresentationPushUp, MtConversionPushUp, MtConversionDistribution]))
+                    mtOptimizationsFromList [MtTrivialOptimization, MtClientPresentationPushUp, MtConversionPushUp, MtConversionDistribution])
                     ansiDialect
                 mainLoop spec
             else do
