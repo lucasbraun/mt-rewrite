@@ -122,7 +122,7 @@ rewriteQuery spec setting (Pa.Select ann selDistinct selSelectList selTref selWh
             newOrderBy
 -- default case handles anything we do not handle so far
             selLimit selOffset selOption
-rewriteQuery _ _ query _ = Right query
+rewriteQuery _ _ query _ = Left $ FromMtRewriteError $ "Rewrite function not yet implemented for query expression " ++ show query
 
 rewriteTrefList :: MtSchemaSpec -> MtSetting -> Pa.TableRefList -> Either MtRewriteError Pa.TableRefList
 rewriteTrefList spec setting (Pa.SubTref ann sel:trefs) = do
@@ -144,9 +144,10 @@ rewriteTrefList spec setting (Pa.FullAlias ann tb cols tref:trefs) = do
     h <- rewriteTrefList spec setting [tref]
     l <- rewriteTrefList spec setting trefs
     Right $ Pa.FullAlias ann tb cols (head h) : l
-rewriteTrefList spec setting (tref:trefs) = do
+rewriteTrefList spec setting (Pa.Tref ann tbl:trefs) = do
     t <- rewriteTrefList spec setting trefs
-    Right $ tref : t
+    Right $ Pa.Tref ann tbl : t
+rewriteTrefList _ _ (tref:_) =  Left $ FromMtRewriteError $ "Rewrite function not yet implemented for table-ref " ++ show tref
 rewriteTrefList _ _ [] = Right []
 
 -- ommmits the table name of an attribute if necessary, this is actually the case for convertible attributes in group- and order-by clauses

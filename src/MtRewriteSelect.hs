@@ -114,6 +114,18 @@ rewriteScalarExpr spec setting (Pa.Case ann cases els) trefs rFun = do
     c <- rewriteCases spec setting cases trefs rFun
     e <- rewriteMaybeScalarExpr spec setting els trefs rFun
     Right $ Pa.Case ann c e
+rewriteScalarExpr spec setting (Pa.AggregateApp ann d expr o) trefs rFun = do
+    e <- rewriteScalarExpr spec setting expr trefs rFun
+    Right $ Pa.AggregateApp ann d e o
+rewriteScalarExpr spec setting (Pa.Extract ann f expr) trefs rFun = do
+    e <- rewriteScalarExpr spec setting expr trefs rFun
+    Right $ Pa.Extract ann f e
+rewriteScalarExpr _ _ (Pa.StringLit ann s) _ _ =
+    Right $ Pa.StringLit ann s
+rewriteScalarExpr _ _ (Pa.NumberLit ann s) _ _ =
+    Right $ Pa.NumberLit ann s
+rewriteScalarExpr _ _ (Pa.Star ann) _ _ =
+    Right $ Pa.Star ann
 rewriteScalarExpr spec (c,d,o) (Pa.Identifier iAnn i) trefs _ =
     let (tableName, attName) = getTableAndAttName i
         comparability = lookupAttributeComparability spec (tableName, attName) trefs
@@ -125,5 +137,5 @@ rewriteScalarExpr spec (c,d,o) (Pa.Identifier iAnn i) trefs _ =
                     ,Pa.NumberLit iAnn (show c)]
         rewrite _ _ _ = Pa.Identifier iAnn i
     in Right $ rewrite comparability tableName (MtTrivialOptimization `elem` o && (length d == 1) && (head d == c))
-rewriteScalarExpr _ _ expr _ _ = Right expr
+rewriteScalarExpr _ _ expr _ _ = Left $ FromMtRewriteError $ "Rewrite-select function not implemented yet for scalar expr " ++ show expr
 

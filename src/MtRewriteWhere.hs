@@ -90,6 +90,10 @@ rewriteScalarExpr spec setting (Pa.Case ann cases els) trefs rFun = do
     c <- rewriteCases spec setting cases trefs rFun
     e <- convertClause spec setting els trefs rFun
     Right $ Pa.Case ann c e
+rewriteScalarExpr _ _ (Pa.StringLit ann s) _ _ =
+    Right $ Pa.StringLit ann s
+rewriteScalarExpr _ _ (Pa.NumberLit ann s) _ _ =
+    Right $ Pa.NumberLit ann s
 rewriteScalarExpr spec (c,d,o) (Pa.Identifier iAnn i) trefs _ =
     let (tableName, attName) = getTableAndAttName i
         comparability = lookupAttributeComparability spec (tableName, attName) trefs
@@ -101,7 +105,7 @@ rewriteScalarExpr spec (c,d,o) (Pa.Identifier iAnn i) trefs _ =
                     ,Pa.NumberLit iAnn (show c)]
         rewrite _ _ _ = Pa.Identifier iAnn i
     in Right $ rewrite comparability tableName (MtTrivialOptimization `elem` o && (length d == 1) && (head d == c))
-rewriteScalarExpr _ _ expr _ _ = Right expr
+rewriteScalarExpr _ _ expr _ _ = Left $ FromMtRewriteError $ "Rewrite-where function not implemented yet for scalar expr " ++ show expr
 
 -- checks the join predicates and adds necessary constraints
 -- right now only checks simple (non-nested and non-complex) join predicates
@@ -114,7 +118,6 @@ adjustClause spec (_,d,o) (Just whereClause) trefs =
             adjustedExp <- adjustScalarExpr spec whereClause trefs
             Right $ Just adjustedExp
 adjustClause _ _ whereClause _ = Right whereClause
-        --
 
 -- adds tenant identifier for mt-specific predicates
 adjustJoinPredicate :: MtTableName -> MtTableName -> String -> Pa.ScalarExpr -> Pa.TableRefList -> Pa.ScalarExpr
@@ -156,6 +159,7 @@ adjustScalarExpr spec (Pa.BinaryOp ann i arg0 arg1) trefs = do
 adjustScalarExpr spec (Pa.PrefixOp ann opName arg) trefs= do
     h <- adjustScalarExpr spec arg trefs
     Right $ Pa.PrefixOp ann opName h
+-- TODO: add other predicates if necessary
 adjustScalarExpr _ expr _ = Right expr
 
 -- adds the necessary dataset filter to a where clause
@@ -186,5 +190,6 @@ addDFilter spec ds (Pa.TableAlias _ (Pa.Nmc newName) tref) whereClause priorName
     let computeFinalName (Just n)       = n
         computeFinalName Nothing        = newName
     in  addDFilter spec ds tref whereClause (Just $ computeFinalName priorName)
+-- all other trefs are filtered by calling the rewrite mechnism recursively on them
 addDFilter _ _ _ whereClause _ = whereClause
 
