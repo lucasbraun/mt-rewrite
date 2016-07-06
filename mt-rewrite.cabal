@@ -18,10 +18,13 @@ library
   other-modules:       MtTypes
                      , MtUtils
                      , MtAnnotate
+                     , MtRewriteSelect
+                     , MtRewriteWhere
   build-depends:       base >= 4.7 && < 5
                      , hssqlppp
                      , text
                      , containers
+                     , multimap
   default-language:    Haskell2010
   default-extensions:  OverloadedStrings
 

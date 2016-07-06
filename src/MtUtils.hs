@@ -1,6 +1,11 @@
 module MtUtils
 (
-    TableAttributePair
+    MtRewriteError(..)
+    ,ProvenanceItem(..)
+    ,Provenance
+    ,RewriteQueryFun
+    ,CasesType
+    ,TableAttributePair
     ,getTenantAttributeName
     ,getTenantIdentifier
     ,isGlobalTable
@@ -16,7 +21,31 @@ import MtTypes
 import qualified Database.HsSqlPpp.Parse as Pa
 import qualified Database.HsSqlPpp.Annotation as A
 import qualified Data.Map as M
+import qualified Data.MultiMap as MM
 
+-- error handling
+data MtRewriteError = FromParseError Pa.ParseErrorExtra | FromMtRewriteError String
+instance Show MtRewriteError where
+    show (FromParseError err)     = show err
+    show (FromMtRewriteError err) = "MTSQL-ERROR: " ++ err
+
+-- conversion provenance
+data ProvenanceItem = ProvenanceItem    { fieldName :: Pa.Name        
+                                        , toUniversal ::  MtToUniversalFunc
+                                        , fromUniversal :: MtFromUniversalFunc
+                                        , tenantField :: Pa.Name
+                                        , convereted :: Bool
+                                        , shouldConvert :: Bool
+                                        } deriving (Show, Eq)
+
+-- the key used in the provenance is the attribute name 
+type Provenance = MM.MultiMap MtAttributeName ProvenanceItem
+
+-- used for mutually recursive modules
+type RewriteQueryFun = MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError Pa.QueryExpr
+type CasesType = Pa.CaseScalarExprListScalarExprPairList
+
+-- used for looking up table and attribute names of an Identifier
 type TableAttributePair = (Maybe MtTableName, Maybe MtAttributeName)
 
 getTenantAttributeName :: MtTableName -> MtAttributeName
