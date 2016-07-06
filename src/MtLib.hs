@@ -85,7 +85,7 @@ mtCompactPrint result dialect =
 -- This means it is context-free and somehow self-conained... or in other words every (sub-query) is in MT format
 -- All the other things should be deferred to optimizations
 
--- parses a single SQL statement terminated by ;
+-- parses and rewrites a single SQL statement terminated by ;
 mtRewrite :: MtSchemaSpec -> MtSetting -> String -> D.Dialect -> MtRewriteResult
 mtRewrite spec setting statement dialect = do
     parsedStatement <- mtParse statement dialect
@@ -94,8 +94,7 @@ mtRewrite spec setting statement dialect = do
     rewrittenStatement <- rewriteStatement spec setting annotatedStatement
     Right rewrittenStatement
 
--- helper types and functions
-
+-- rewrites an annotated and parsed SQL statement
 rewriteStatement :: MtSchemaSpec -> MtSetting -> Pa.Statement -> MtRewriteResult
 rewriteStatement spec setting (Pa.QueryStatement a q) = do
     rewrittenQuery <- rewriteQuery spec setting q []
@@ -103,7 +102,9 @@ rewriteStatement spec setting (Pa.QueryStatement a q) = do
 rewriteStatement spec setting (Pa.CreateView a n c q) = do
     rewrittenQuery <- rewriteQuery spec setting q []
     Right $ Pa.CreateView a n c rewrittenQuery
-rewriteStatement _ _ statement = Right statement
+rewriteStatement _ _ (Pa.Set ann s vals) = Right $ Pa.Set ann s vals
+rewriteStatement _ _ (Pa.DropSomething a d i n c) = Right $ Pa.DropSomething a d i n c
+rewriteStatement _ _ statement = Left $ FromMtRewriteError $ "Rewrite function not yet implementd for statement " ++ show statement
 
 -- the main rewrite function, for the case it is used in subqueries, it takes also the table refs from the outer queries into account
 rewriteQuery :: MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError Pa.QueryExpr
@@ -123,6 +124,10 @@ rewriteQuery spec setting (Pa.Select ann selDistinct selSelectList selTref selWh
 -- default case handles anything we do not handle so far
             selLimit selOffset selOption
 rewriteQuery _ _ query _ = Left $ FromMtRewriteError $ "Rewrite function not yet implemented for query expression " ++ show query
+
+-- ## REWRITE FUNCTIONS ##
+-- for small things... for SELECT and WHERE clause, there are separate files
+-- ########################
 
 rewriteTrefList :: MtSchemaSpec -> MtSetting -> Pa.TableRefList -> Either MtRewriteError Pa.TableRefList
 rewriteTrefList spec setting (Pa.SubTref ann sel:trefs) = do
