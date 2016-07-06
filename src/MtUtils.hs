@@ -3,6 +3,7 @@ module MtUtils
     MtRewriteError(..)
     ,ProvenanceItem(..)
     ,Provenance
+    ,emptyProvenance
     ,RewriteQueryFun
     ,CasesType
     ,TableAttributePair
@@ -40,9 +41,11 @@ data ProvenanceItem = ProvenanceItem    { fieldName :: Pa.Name
 
 -- the key used in the provenance is the attribute name 
 type Provenance = MM.MultiMap MtAttributeName ProvenanceItem
+emptyProvenance :: Provenance
+emptyProvenance = MM.empty
 
--- used for mutually recursive modules
-type RewriteQueryFun = MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError Pa.QueryExpr
+-- allows MtRewriteSelect and MtRewriteWhere to call recurively back into MtLib using a Function rather than an import
+type RewriteQueryFun = MtSchemaSpec -> MtSetting -> Provenance -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError (Provenance, Pa.QueryExpr)
 type CasesType = Pa.CaseScalarExprListScalarExprPairList
 
 -- used for looking up table and attribute names of an Identifier

@@ -97,63 +97,63 @@ mtRewrite spec setting statement dialect = do
 -- rewrites an annotated and parsed SQL statement
 rewriteStatement :: MtSchemaSpec -> MtSetting -> Pa.Statement -> MtRewriteResult
 rewriteStatement spec setting (Pa.QueryStatement a q) = do
-    rewrittenQuery <- rewriteQuery spec setting q []
+    (_, rewrittenQuery) <- rewriteQuery spec setting emptyProvenance q []
     Right $ Pa.QueryStatement a rewrittenQuery
 rewriteStatement spec setting (Pa.CreateView a n c q) = do
-    rewrittenQuery <- rewriteQuery spec setting q []
+    (_, rewrittenQuery) <- rewriteQuery spec setting emptyProvenance q []
     Right $ Pa.CreateView a n c rewrittenQuery
 rewriteStatement _ _ (Pa.Set ann s vals) = Right $ Pa.Set ann s vals
 rewriteStatement _ _ (Pa.DropSomething a d i n c) = Right $ Pa.DropSomething a d i n c
 rewriteStatement _ _ statement = Left $ FromMtRewriteError $ "Rewrite function not yet implementd for statement " ++ show statement
 
 -- the main rewrite function, for the case it is used in subqueries, it takes also the table refs from the outer queries into account
-rewriteQuery :: MtSchemaSpec -> MtSetting -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError Pa.QueryExpr
-rewriteQuery spec setting (Pa.Select ann selDistinct selSelectList selTref selWhere
+rewriteQuery :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError (Provenance, Pa.QueryExpr)
+rewriteQuery spec setting p0 (Pa.Select ann selDistinct selSelectList selTref selWhere
     selGroupBy selHaving selOrderBy selLimit selOffset selOption) trefs = do
-        let allTrefs      = selTref ++ trefs    -- ordering matters here as the first value that fits is taken
-        newTrefs         <- rewriteTrefList spec setting selTref
-        filteredWhere    <- rewriteWhereClause spec setting selWhere selTref allTrefs rewriteQuery
-        newHaving        <- rewriteHavingClause spec setting selHaving allTrefs rewriteQuery
-        newSelectList    <- rewriteSelectList spec setting selSelectList selTref rewriteQuery
+        let isUpperMost     = null trefs          -- is this query uppermost SQL query?
+        let allTrefs        = selTref ++ trefs    -- ordering matters here as the first value that fits is taken
+        (p1,newTrefs)      <- rewriteTrefList spec setting p0 selTref
+        (p2,filteredWhere) <- rewriteWhereClause spec setting p1 selWhere selTref allTrefs rewriteQuery
+        (p3,newHaving)     <- rewriteHavingClause spec setting p2 selHaving allTrefs rewriteQuery
+        (p4,newSelectList) <- rewriteSelectList spec setting p3 selSelectList selTref rewriteQuery
         let newGroupBy    = rewriteGroupByClause spec selTref selGroupBy
         let newOrderBy    = rewriteOrderByClause spec selTref selOrderBy
-        Right $ Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
+        Right $ (p4, Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
             newGroupBy
             newHaving
             newOrderBy
--- default case handles anything we do not handle so far
-            selLimit selOffset selOption
-rewriteQuery _ _ query _ = Left $ FromMtRewriteError $ "Rewrite function not yet implemented for query expression " ++ show query
+            selLimit selOffset selOption)
+rewriteQuery _ _ _ query _ = Left $ FromMtRewriteError $ "Rewrite function not yet implemented for query expression " ++ show query
 
 -- ## REWRITE FUNCTIONS ##
 -- for small things... for SELECT and WHERE clause, there are separate files
 -- ########################
 
-rewriteTrefList :: MtSchemaSpec -> MtSetting -> Pa.TableRefList -> Either MtRewriteError Pa.TableRefList
-rewriteTrefList spec setting (Pa.SubTref ann sel:trefs) = do
-    h <- rewriteQuery spec setting sel []
-    t <- rewriteTrefList spec setting trefs
-    Right $ Pa.SubTref ann h : t
-rewriteTrefList spec setting (Pa.TableAlias ann tb tref:trefs) = do
-    h <- rewriteTrefList spec setting [tref]
-    t <- rewriteTrefList spec setting trefs
-    Right $ Pa.TableAlias ann tb (head h) : t
-rewriteTrefList spec setting (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.JoinOn a expr)):trefs) = do
-    l <- rewriteTrefList spec setting [tref0]
-    r <- rewriteTrefList spec setting [tref1]
+rewriteTrefList :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.TableRefList -> Either MtRewriteError (Provenance, Pa.TableRefList)
+rewriteTrefList spec setting p0 (Pa.SubTref ann sel:trefs) = do
+    (p1,h) <- rewriteQuery spec setting p0 sel []
+    (p2,t) <- rewriteTrefList spec setting p1 trefs
+    Right $ (p2, Pa.SubTref ann h : t)
+rewriteTrefList spec setting p0 (Pa.TableAlias ann tb tref:trefs) = do
+    (p1,h) <- rewriteTrefList spec setting p0 [tref]
+    (p2,t) <- rewriteTrefList spec setting p1 trefs
+    Right $ (p2, Pa.TableAlias ann tb (head h) : t)
+rewriteTrefList spec setting p0 (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.JoinOn a expr)):trefs) = do
+    (p1,l) <- rewriteTrefList spec setting p0 [tref0]
+    (p2,r) <- rewriteTrefList spec setting p1 [tref1]
     let allTrefs = [tref0, tref1]
-    (Just filtered) <- rewriteWhereClause spec setting (Just expr) allTrefs allTrefs rewriteQuery
-    rest <- rewriteTrefList spec setting trefs
-    Right $ Pa.JoinTref ann (head l) n t h (head r) (Just (Pa.JoinOn a filtered)) : rest
-rewriteTrefList spec setting (Pa.FullAlias ann tb cols tref:trefs) = do
-    h <- rewriteTrefList spec setting [tref]
-    l <- rewriteTrefList spec setting trefs
-    Right $ Pa.FullAlias ann tb cols (head h) : l
-rewriteTrefList spec setting (Pa.Tref ann tbl:trefs) = do
-    t <- rewriteTrefList spec setting trefs
-    Right $ Pa.Tref ann tbl : t
-rewriteTrefList _ _ (tref:_) =  Left $ FromMtRewriteError $ "Rewrite function not yet implemented for table-ref " ++ show tref
-rewriteTrefList _ _ [] = Right []
+    (p3,Just filtered) <- rewriteWhereClause spec setting p2 (Just expr) allTrefs allTrefs rewriteQuery
+    (p4,rest) <- rewriteTrefList spec setting p3 trefs
+    Right $ (p4, Pa.JoinTref ann (head l) n t h (head r) (Just (Pa.JoinOn a filtered)) : rest)
+rewriteTrefList spec setting p0 (Pa.FullAlias ann tb cols tref:trefs) = do
+    (p1,h) <- rewriteTrefList spec setting p0 [tref]
+    (p2,l) <- rewriteTrefList spec setting p1 trefs
+    Right $ (p2, Pa.FullAlias ann tb cols (head h) : l)
+rewriteTrefList spec setting p0 (Pa.Tref ann tbl:trefs) = do
+    (p1,t) <- rewriteTrefList spec setting p0 trefs
+    Right $ (p1, Pa.Tref ann tbl : t)
+rewriteTrefList _ _ _ (tref:_) =  Left $ FromMtRewriteError $ "Rewrite function not yet implemented for table-ref " ++ show tref
+rewriteTrefList _ _ prov [] = Right (prov, [])
 
 -- ommmits the table name of an attribute if necessary, this is actually the case for convertible attributes in group- and order-by clauses
 omitIfNecessary :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> Pa.ScalarExpr
