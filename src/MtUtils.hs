@@ -3,6 +3,7 @@ module MtUtils
     MtRewriteError(..)
     ,ProvenanceItem(..)
     ,Provenance
+    ,addIdentifierToProvenance
     ,emptyProvenance
     ,RewriteQueryFun
     ,CasesType
@@ -13,6 +14,9 @@ module MtUtils
     ,getOldTableName
     ,getTableAndAttName
     ,lookupAttributeComparability
+    ,getConversionFunctions
+    ,isComparisonOp
+    ,isConstExpr
     ,printName
     ,containsString
     ,removeDuplicates
@@ -34,8 +38,8 @@ instance Show MtRewriteError where
 data ProvenanceItem = ProvenanceItem    { fieldName :: Pa.Name        
                                         , toUniversal ::  MtToUniversalFunc
                                         , fromUniversal :: MtFromUniversalFunc
-                                        , tenantField :: Pa.Name
-                                        , convereted :: Bool
+                                        , tenantField :: Pa.ScalarExpr  -- Identifier
+                                        , converted :: Bool
                                         , shouldConvert :: Bool
                                         } deriving (Show, Eq)
 
@@ -43,6 +47,15 @@ data ProvenanceItem = ProvenanceItem    { fieldName :: Pa.Name
 type Provenance = MM.MultiMap MtAttributeName ProvenanceItem
 emptyProvenance :: Provenance
 emptyProvenance = MM.empty
+
+-- helper functions for provenance 
+addIdentifierToProvenance :: Provenance -> ConversionFunctionsTriple -> Pa.ScalarExpr -> Pa.ScalarExpr -> Bool -> Bool -> Provenance
+addIdentifierToProvenance p (to,from,(_, Just attName)) (Pa.Identifier _ i) tenant convert should =
+    let pItem = ProvenanceItem {fieldName=i, toUniversal=to, fromUniversal=from,
+        tenantField=tenant, converted = convert, shouldConvert = should}
+    in  MM.insert attName pItem p
+-- default... check if that is correct
+addIdentifierToProvenance p _ _ _ _ _ = p
 
 -- allows MtRewriteSelect and MtRewriteWhere to call recurively back into MtLib using a Function rather than an import
 type RewriteQueryFun = MtSchemaSpec -> MtSetting -> Provenance -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError (Provenance, Pa.QueryExpr)
@@ -58,7 +71,7 @@ getTenantAttributeName s = s ++ "_TENANT_KEY"
 getTenantIdentifier :: String -> MtTableName -> Pa.ScalarExpr
 getTenantIdentifier tName mtName = Pa.Identifier A.emptyAnnotation $ Pa.Name A.emptyAnnotation [Pa.Nmc tName, Pa.Nmc $ getTenantAttributeName mtName]
 
--- checks whehter a table is global. Assumes anything not in the schema spec is also global
+-- checks whether a table is global. Assumes anything not in the schema spec is also global
 isGlobalTable :: MtSchemaSpec -> Maybe MtTableName -> Bool
 isGlobalTable spec (Just tName) =
     let tableSpec = M.lookup tName spec
@@ -102,6 +115,33 @@ lookupAttributeComparability spec (tableName, attributeName) trefs = do
     (FromMtSpecificTable tableSpec) <- M.lookup tName spec
     tSpec <- Just tableSpec
     M.lookup attName tSpec
+
+type ConversionFunctionsTriple = (MtToUniversalFunc, MtFromUniversalFunc, TableAttributePair)
+-- gets the conversion functions and the tablename/attname pair
+getConversionFunctions :: MtSchemaSpec -> Pa.TableRefList -> Pa.Name -> Maybe ConversionFunctionsTriple
+getConversionFunctions s t i  =
+    let pair = getTableAndAttName i
+        comparability = lookupAttributeComparability s pair t
+        result (Just (MtConvertible to from))   = Just (to, from, pair)
+        result _                                = Nothing
+    in result comparability
+
+isComparisonOp :: Pa.ScalarExpr -> Bool
+isComparisonOp (Pa.BinaryOp _ (Pa.Name _ [Pa.Nmc opName]) _ _) = opName `elem` ["=", "<>", "<", ">", ">=", "<="]
+isComparisonOp _ = False
+
+-- anything that does not include a convertible attribute is supposed to be constant
+isConstExpr :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> Bool
+isConstExpr _ _ (Pa.StringLit _ _)      = True
+isConstExpr _ _ (Pa.NumberLit _ _)      = True
+isConstExpr s t (Pa.Parens _ expr)      = isConstExpr s t expr
+isConstExpr s t (Pa.App _ _ exprs)      = foldl1 (&&) (map (isConstExpr s t) exprs)
+isConstExpr s t (Pa.Identifier _ i)  =
+    let convFun         = getConversionFunctions s t i
+        result Nothing  = True
+        result _        = False
+    in result convFun
+isConstExpr _ _ _                       = False
 
 printName :: Pa.Name -> String
 printName (Pa.Name _ (Pa.Nmc name:names)) = foldl (\w (Pa.Nmc n) -> w ++ "." ++ n) name names

@@ -11,9 +11,15 @@ import MtUtils
 
 rewriteHavingClause :: MtSchemaSpec -> MtSetting -> Provenance -> Maybe Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, (Maybe Pa.ScalarExpr))
-rewriteHavingClause spec setting p0 clause trefs rFun = do
-    adjustedHaving <- adjustClause spec setting clause trefs    -- adds predicates on tenant keys
-    convertClause spec setting p0 adjustedHaving trefs rFun     -- adds conversion functions
+rewriteHavingClause spec (c,d,o) p0 clause trefs rFun = 
+    if (MtTrivialOptimization `elem` o && (length d == 1) && (head d == c))
+        then do
+            adjustedClause <- adjustClause spec (c,d,o) clause trefs                    -- adds predicates on tenant keys
+            Right (p0, adjustedClause)
+        else do
+            (p1, convertedHaving) <- convertClause spec (c,d,o) p0 clause trefs rFun    -- adds conversion functions
+            adjustedClause <- adjustClause spec (c,d,o) convertedHaving trefs           -- adds predicates on tenant keys
+            Right (p1, adjustedClause)
 
 rewriteWhereClause :: MtSchemaSpec -> MtSetting -> Provenance -> Maybe Pa.ScalarExpr -> Pa.TableRefList -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, (Maybe Pa.ScalarExpr))
@@ -25,87 +31,119 @@ rewriteWhereClause spec (c,d,o) p0 clause seltref trefs rFun = do
 convertClause :: MtSchemaSpec -> MtSetting -> Provenance -> Maybe Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, (Maybe Pa.ScalarExpr))
 convertClause spec setting p0 (Just expr) trefs rFun = do
-    (p1,h) <- rewriteScalarExpr spec setting p0 expr trefs rFun
+    (p1,h) <- convertScalarExpr spec setting p0 expr trefs rFun
     Right $ (p1, Just h)
 convertClause _ _ prov Nothing _ _ = Right (prov, Nothing)
 
-rewriteScalarExprList :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExprList -> Pa.TableRefList -> RewriteQueryFun
+convertScalarExprList :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExprList -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, Pa.ScalarExprList)
-rewriteScalarExprList spec setting p0 (arg:args) trefs rFun = do
-    (p1,newArg) <- rewriteScalarExpr spec setting p0 arg trefs rFun
-    (p2,newArgs) <- rewriteScalarExprList spec setting p1 args trefs rFun
+convertScalarExprList spec setting p0 (arg:args) trefs rFun = do
+    (p1,newArg) <- convertScalarExpr spec setting p0 arg trefs rFun
+    (p2,newArgs) <- convertScalarExprList spec setting p1 args trefs rFun
     Right (p2, (newArg : newArgs))
-rewriteScalarExprList _ _ prov [] _ _ = Right (prov, [])
+convertScalarExprList _ _ prov [] _ _ = Right (prov, [])
 
-rewriteInList :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.InList -> Pa.TableRefList -> RewriteQueryFun
+convertInList :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.InList -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, Pa.InList)
-rewriteInList spec setting p0 (Pa.InList a elist) trefs rFun = do
-    (p1,l) <- rewriteScalarExprList spec setting p0 elist trefs rFun
+convertInList spec setting p0 (Pa.InList a elist) trefs rFun = do
+    (p1,l) <- convertScalarExprList spec setting p0 elist trefs rFun
     Right $ (p1, Pa.InList a l)
-rewriteInList spec setting p0 (Pa.InQueryExpr a sel) trefs rFun = do
+convertInList spec setting p0 (Pa.InQueryExpr a sel) trefs rFun = do
     (p1,h) <- rFun spec setting p0 sel trefs
     Right $ (p1, Pa.InQueryExpr a h)
 
-rewriteCases :: MtSchemaSpec -> MtSetting -> Provenance -> CasesType -> Pa.TableRefList -> RewriteQueryFun
+convertCases :: MtSchemaSpec -> MtSetting -> Provenance -> CasesType -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, CasesType)
-rewriteCases spec setting p0 ((elist, expr):rest) trefs rFun = do
-    (p1,h) <- rewriteScalarExprList spec setting p0 elist trefs rFun
-    (p2,e) <- rewriteScalarExpr spec setting p1 expr trefs rFun
-    (p3,l) <- rewriteCases spec setting p2 rest trefs rFun
+convertCases spec setting p0 ((elist, expr):rest) trefs rFun = do
+    (p1,h) <- convertScalarExprList spec setting p0 elist trefs rFun
+    (p2,e) <- convertScalarExpr spec setting p1 expr trefs rFun
+    (p3,l) <- convertCases spec setting p2 rest trefs rFun
     Right (p3, ((h, e):l))
-rewriteCases _ _ prov [] _ _ = Right (prov, [])
+convertCases _ _ prov [] _ _ = Right (prov, [])
 
-rewriteScalarExpr :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
+-- should only be called with Conversion Push up enabled!
+-- if both args are identifiers (or derived from identifiers) [from different tables], bring to universal format,
+-- otherwise compare constants
+convertComparisonOp :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
-rewriteScalarExpr spec setting p0 (Pa.PrefixOp ann opName arg) trefs rFun = do
-    (p1,h) <- rewriteScalarExpr spec setting p0 arg trefs rFun
+convertComparisonOp spec setting p0 (Pa.BinaryOp ann opName arg0 arg1) trefs rFun = do
+-- dummy implmenetation for now
+     (p1,b1) <- convertScalarExpr spec setting p0 arg0 trefs rFun
+     (p2,b2) <- convertScalarExpr spec setting p1 arg1 trefs rFun
+     Right $ (p2, Pa.BinaryOp ann opName b1 b2)
+    
+
+-- convertLiteral :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
+--         -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
+
+-- at this point, we certainly convert the identifier no matter what
+convertIdentifier :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList 
+        -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
+convertIdentifier spec (c,_,o) prov (Pa.Identifier iAnn i) trefs =
+    let triple  = getConversionFunctions spec trefs i
+        idf     = Pa.Identifier iAnn i
+        convert (Just (to, from, (Just tName, Just attName))) =
+            let (Just oldTName) = getOldTableName (Just tName) trefs
+                tidf            = getTenantIdentifier tName oldTName
+                universal       = Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to]) [idf, tidf]
+                rewritten
+                    | MtClientPresentationPushUp `elem` o   = universal
+                    | otherwise = Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])[universal,Pa.NumberLit iAnn (show c)]
+                newProv = addIdentifierToProvenance prov (to, from, (Just tName, Just attName)) idf tidf False True
+            in Right $ (newProv, rewritten)
+        convert _ = Right (prov, idf)
+    in convert triple
+convertIdentifier _ _ prov idf _ = Right (prov, idf)
+
+-- recursively convert a scalar expression
+convertScalarExpr :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
+        -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
+convertScalarExpr spec setting p0 (Pa.PrefixOp ann opName arg) trefs rFun = do
+    (p1,h) <- convertScalarExpr spec setting p0 arg trefs rFun
     Right $ (p1, Pa.PrefixOp ann opName h)
-rewriteScalarExpr spec setting p0 (Pa.PostfixOp ann opName arg) trefs rFun = do
-    (p1,h) <- rewriteScalarExpr spec setting p0 arg trefs rFun
+convertScalarExpr spec setting p0 (Pa.PostfixOp ann opName arg) trefs rFun = do
+    (p1,h) <- convertScalarExpr spec setting p0 arg trefs rFun
     Right $ (p1, Pa.PostfixOp ann opName h)
-rewriteScalarExpr spec setting p0 (Pa.BinaryOp ann opName arg0 arg1) trefs rFun = do
-    (p1,b1) <- rewriteScalarExpr spec setting p0 arg0 trefs rFun
-    (p2,b2) <- rewriteScalarExpr spec setting p1 arg1 trefs rFun
-    Right $ (p2, Pa.BinaryOp ann opName b1 b2)
-rewriteScalarExpr spec setting p0 (Pa.SpecialOp ann opName args) trefs rFun = do
-    (p1,l) <- rewriteScalarExprList spec setting p0 args trefs rFun
+convertScalarExpr spec (c,d,o) p0 (Pa.BinaryOp ann opName arg0 arg1) trefs rFun =
+    if MtConversionPushUp `elem` o && isComparisonOp (Pa.BinaryOp ann opName arg0 arg1)
+        then
+            convertComparisonOp spec (c,d,o) p0
+                (Pa.BinaryOp ann opName arg0 arg1) trefs rFun
+        else do
+            let setting = (c,d,o)
+            (p1,b1) <- convertScalarExpr spec setting p0 arg0 trefs rFun
+            (p2,b2) <- convertScalarExpr spec setting p1 arg1 trefs rFun
+            Right $ (p2, Pa.BinaryOp ann opName b1 b2)
+convertScalarExpr spec setting p0 (Pa.SpecialOp ann opName args) trefs rFun = do
+    (p1,l) <- convertScalarExprList spec setting p0 args trefs rFun
     Right $ (p1, Pa.SpecialOp ann opName l)
-rewriteScalarExpr spec setting p0 (Pa.App ann funName args) trefs rFun = do
-    (p1,l) <- rewriteScalarExprList spec setting p0 args trefs rFun
+convertScalarExpr spec setting p0 (Pa.App ann funName args) trefs rFun = do
+    (p1,l) <- convertScalarExprList spec setting p0 args trefs rFun
     Right $ (p1, Pa.App ann funName l)
-rewriteScalarExpr spec setting p0 (Pa.Parens ann expr) trefs rFun = do
-    (p1,h) <- rewriteScalarExpr spec setting p0 expr trefs rFun
+convertScalarExpr spec setting p0 (Pa.Parens ann expr) trefs rFun = do
+    (p1,h) <- convertScalarExpr spec setting p0 expr trefs rFun
     Right $ (p1, Pa.Parens ann h)
-rewriteScalarExpr spec setting p0 (Pa.InPredicate ann expr i list) trefs rFun = do
-    (p1,h) <- rewriteScalarExpr spec setting p0 expr trefs rFun
-    (p2,l) <- rewriteInList spec setting p1 list trefs rFun
+convertScalarExpr spec setting p0 (Pa.InPredicate ann expr i list) trefs rFun = do
+    (p1,h) <- convertScalarExpr spec setting p0 expr trefs rFun
+    (p2,l) <- convertInList spec setting p1 list trefs rFun
     Right $ (p2, Pa.InPredicate ann h i l)
-rewriteScalarExpr spec setting p0 (Pa.Exists ann sel) trefs rFun = do
+convertScalarExpr spec setting p0 (Pa.Exists ann sel) trefs rFun = do
     (p1,h) <- rFun spec setting p0 sel trefs
     Right $ (p1, Pa.Exists ann h)
-rewriteScalarExpr spec setting p0 (Pa.ScalarSubQuery ann sel) trefs rFun = do
+convertScalarExpr spec setting p0 (Pa.ScalarSubQuery ann sel) trefs rFun = do
     (p1,h) <- rFun spec setting p0 sel trefs
     Right $ (p1, Pa.ScalarSubQuery ann h)
-rewriteScalarExpr spec setting p0 (Pa.Case ann cases els) trefs rFun = do
-    (p1,c) <- rewriteCases spec setting p0 cases trefs rFun
+convertScalarExpr spec setting p0 (Pa.Case ann cases els) trefs rFun = do
+    (p1,c) <- convertCases spec setting p0 cases trefs rFun
     (p2,e) <- convertClause spec setting p1 els trefs rFun
     Right $ (p2, Pa.Case ann c e)
-rewriteScalarExpr _ _ prov (Pa.StringLit ann s) _ _ =
+convertScalarExpr _ _ prov (Pa.StringLit ann s) _ _ =
     Right $ (prov, Pa.StringLit ann s)
-rewriteScalarExpr _ _ prov (Pa.NumberLit ann s) _ _ =
+convertScalarExpr _ _ prov (Pa.NumberLit ann s) _ _ =
     Right $ (prov, Pa.NumberLit ann s)
-rewriteScalarExpr spec (c,d,o) prov (Pa.Identifier iAnn i) trefs _ =
-    let (tableName, attName) = getTableAndAttName i
-        comparability = lookupAttributeComparability spec (tableName, attName) trefs
-        rewrite (Just (MtConvertible to from)) (Just tName) False =
-            let (Just oldTName) = getOldTableName (Just tName) trefs
-            in  Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])
-                    [Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to])
-                        [Pa.Identifier iAnn i, getTenantIdentifier tName oldTName]
-                    ,Pa.NumberLit iAnn (show c)]
-        rewrite _ _ _ = Pa.Identifier iAnn i
-    in Right $ (prov, rewrite comparability tableName (MtTrivialOptimization `elem` o && (length d == 1) && (head d == c)))
-rewriteScalarExpr _ _ _ expr _ _ = Left $ FromMtRewriteError $ "Rewrite-where function not implemented yet for scalar expr " ++ show expr
+convertScalarExpr spec setting p0 (Pa.Identifier iAnn i) trefs _ = do -- at this point, we assume that we have to convert
+    convertIdentifier spec setting p0 (Pa.Identifier iAnn i) trefs
+convertScalarExpr _ _ _ expr _ _ = Left $ FromMtRewriteError $ "Rewrite-where function not implemented yet for scalar expr " ++ show expr
 
 -- checks the join predicates and adds necessary constraints
 -- right now only checks simple (non-nested and non-complex) join predicates
@@ -133,10 +171,9 @@ adjustJoinPredicate t0 t1 opName expr trefs =
                                         (getTenantIdentifier t0 old0) (getTenantIdentifier t1 old1)) expr
     in exec
 
-
 adjustScalarExpr :: MtSchemaSpec -> Pa.ScalarExpr -> Pa.TableRefList -> Either MtRewriteError Pa.ScalarExpr
 adjustScalarExpr spec (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1)) trefs =
-    let checkNecessary  = opName `elem` ["=", "<>", "<", ">", ">=", "<="]
+    let checkNecessary  = isComparisonOp (Pa.BinaryOp ann (Pa.Name oAnn [Pa.Nmc opName]) (Pa.Identifier i0 n0) (Pa.Identifier i1 n1))
         (t0, a0)        = getTableAndAttName n0
         comp0           = lookupAttributeComparability spec (t0, a0) trefs
         (t1, a1)        = getTableAndAttName n1
