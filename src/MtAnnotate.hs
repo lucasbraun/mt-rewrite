@@ -20,7 +20,7 @@ annotateQuery :: MtSchemaSpec -> Pa.QueryExpr -> Pa.TableRefList -> Pa.QueryExpr
 annotateQuery spec (Pa.Select ann selDistinct selSelectList selTref selWhere
     selGroupBy selHaving selOrderBy selLimit selOffset selOption) trefs =
         let allTrefs        = selTref ++ trefs    -- ordering matters here as the first value that fits is taken
-            newSelectList   = annotateSelectList spec selTref selSelectList
+            newSelectList   = annotateSelectList spec selTref selSelectList (null trefs)
             newTrefs        = annotateTrefList spec selTref
             newWhere        = annotateMaybeScalarExpr spec allTrefs selWhere
             newGroupBy      = map (annotateScalarExpr spec selTref) selGroupBy
@@ -45,19 +45,20 @@ annotateTrefList spec (Pa.FullAlias ann tb cols tref:trefs) = Pa.FullAlias ann t
 annotateTrefList spec (tref:trefs) = tref:annotateTrefList spec trefs
 annotateTrefList _ [] = []
 
-annotateSelectList :: MtSchemaSpec -> Pa.TableRefList -> Pa.SelectList -> Pa.SelectList
-annotateSelectList spec trefs (Pa.SelectList ann items) = Pa.SelectList ann (annotateSelectItems spec trefs items)
+annotateSelectList :: MtSchemaSpec -> Pa.TableRefList -> Pa.SelectList -> Bool -> Pa.SelectList
+annotateSelectList spec trefs (Pa.SelectList ann items) b = Pa.SelectList ann (annotateSelectItems spec trefs items b)
 
-annotateSelectItems :: MtSchemaSpec -> Pa.TableRefList -> [Pa.SelectItem] -> [Pa.SelectItem]
+annotateSelectItems :: MtSchemaSpec -> Pa.TableRefList -> [Pa.SelectItem] -> Bool -> [Pa.SelectItem]
 -- replaces Star Expressions with an enumeration of all attributes instead (* would also display tenant key, which is something we do not want)
-annotateSelectItems spec [Pa.Tref tAnn (Pa.Name nameAnn [Pa.Nmc tname])] [Pa.SelExp selAnn (Pa.Star starAnn)] =
+-- if it is outermost query (which is indicated by the bool)
+annotateSelectItems spec [Pa.Tref tAnn (Pa.Name nameAnn [Pa.Nmc tname])] [Pa.SelExp selAnn (Pa.Star starAnn)] True =
     let tableSpec = M.lookup tname spec
         generate (Just (FromMtSpecificTable tab)) = map (\key -> Pa.SelExp selAnn (Pa.Identifier starAnn (Pa.Name starAnn [Pa.Nmc key]))) (M.keys tab)
         generate _ = [Pa.SelExp selAnn (Pa.Star starAnn)]
-    in annotateSelectItems spec [Pa.Tref tAnn (Pa.Name nameAnn [Pa.Nmc tname])] (generate tableSpec)
+    in annotateSelectItems spec [Pa.Tref tAnn (Pa.Name nameAnn [Pa.Nmc tname])] (generate tableSpec) True
 -- default case, recursively call annotation call on single item
-annotateSelectItems spec trefs (item:items) = annotateSelectItem spec trefs item : annotateSelectItems spec trefs items
-annotateSelectItems _ _ [] = []
+annotateSelectItems spec trefs (item:items) b = annotateSelectItem spec trefs item : annotateSelectItems spec trefs items b
+annotateSelectItems _ _ [] _ = []
 
 annotateSelectItem :: MtSchemaSpec -> Pa.TableRefList -> Pa.SelectItem -> Pa.SelectItem
 annotateSelectItem spec trefs (Pa.SelExp ann scalExp)             = Pa.SelExp ann (annotateScalarExpr spec trefs scalExp)

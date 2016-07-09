@@ -66,7 +66,6 @@ convertComparisonOp spec setting p0 (Pa.BinaryOp ann opName arg0 arg1) trefs rFu
      (p1,b1) <- convertScalarExpr spec setting p0 arg0 trefs rFun
      (p2,b2) <- convertScalarExpr spec setting p1 arg1 trefs rFun
      Right $ (p2, Pa.BinaryOp ann opName b1 b2)
-    
 
 -- convertLiteral :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
 --         -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
