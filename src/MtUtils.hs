@@ -65,7 +65,7 @@ type CasesType = Pa.CaseScalarExprListScalarExprPairList
 type TableAttributePair = (Maybe MtTableName, Maybe MtAttributeName)
 
 getTenantAttributeName :: MtTableName -> MtAttributeName
-getTenantAttributeName s = s ++ "_TENANT_KEY"
+getTenantAttributeName s = s ++ "_tenant_key"
 
 -- takes a (alias of a) table name and an mt table name and constructs the corresponding identifier
 getTenantIdentifier :: String -> MtTableName -> Pa.ScalarExpr

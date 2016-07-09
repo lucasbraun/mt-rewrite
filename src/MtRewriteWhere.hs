@@ -11,12 +11,7 @@ import MtUtils
 
 rewriteHavingClause :: MtSchemaSpec -> MtSetting -> Provenance -> Maybe Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, (Maybe Pa.ScalarExpr))
-rewriteHavingClause spec (c,d,o) p0 clause trefs rFun = 
-    if (MtTrivialOptimization `elem` o && (length d == 1) && (head d == c))
-        then do
-            adjustedClause <- adjustClause spec (c,d,o) clause trefs                    -- adds predicates on tenant keys
-            Right (p0, adjustedClause)
-        else do
+rewriteHavingClause spec (c,d,o) p0 clause trefs rFun = do
             (p1, convertedHaving) <- convertClause spec (c,d,o) p0 clause trefs rFun    -- adds conversion functions
             adjustedClause <- adjustClause spec (c,d,o) convertedHaving trefs           -- adds predicates on tenant keys
             Right (p1, adjustedClause)
@@ -141,8 +136,10 @@ convertScalarExpr _ _ prov (Pa.StringLit ann s) _ _ =
     Right $ (prov, Pa.StringLit ann s)
 convertScalarExpr _ _ prov (Pa.NumberLit ann s) _ _ =
     Right $ (prov, Pa.NumberLit ann s)
-convertScalarExpr spec setting p0 (Pa.Identifier iAnn i) trefs _ = do -- at this point, we assume that we have to convert
-    convertIdentifier spec setting p0 (Pa.Identifier iAnn i) trefs
+convertScalarExpr spec (c,d,o) p0 (Pa.Identifier iAnn i) trefs _ = -- at this point, we assume that we have to convert
+    if (MtTrivialOptimization `elem` o && (length d == 1) && (head d == c))
+        then Right $ (p0, Pa.Identifier iAnn i)
+        else convertIdentifier spec (c,d,o) p0 (Pa.Identifier iAnn i) trefs
 convertScalarExpr _ _ _ expr _ _ = Left $ FromMtRewriteError $ "Rewrite-where function not implemented yet for scalar expr " ++ show expr
 
 -- checks the join predicates and adds necessary constraints
