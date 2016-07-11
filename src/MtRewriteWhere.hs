@@ -91,14 +91,12 @@ convertComparisonOp spec setting p0 (Pa.InPredicate ann expr i list) trefs rFun 
 convertLit ::  Maybe ConversionFunctionsTriple -> Pa.TableRefList -> MtClient -> Pa.ScalarExpr -> Pa.ScalarExpr
 convertLit (Just (to, from, (Just tName, _))) trefs c (Pa.NumberLit a s) =
     let (Just oldTName) = getOldTableName (Just tName) trefs
-    in  Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc from]) [
-            Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc to])[Pa.NumberLit a s, Pa.NumberLit A.emptyAnnotation (show c)],
-            (getTenantIdentifier tName oldTName)]
+    in  createConvFunctionApplication from (
+        createConvFunctionApplication to (Pa.NumberLit a s) (Pa.NumberLit A.emptyAnnotation (show c))) (getTenantIdentifier tName oldTName)
 convertLit (Just (to, from, (Just tName, _))) trefs c (Pa.StringLit a s) =
     let (Just oldTName) = getOldTableName (Just tName) trefs
-    in  Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc from]) [
-            Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc to])[Pa.StringLit a s, Pa.StringLit A.emptyAnnotation (show c)],
-            (getTenantIdentifier tName oldTName)]
+    in  createConvFunctionApplication from (
+        createConvFunctionApplication to (Pa.StringLit a s) (Pa.NumberLit A.emptyAnnotation (show c))) (getTenantIdentifier tName oldTName)
 convertLit _ _ _ l = l
 
 
@@ -111,9 +109,8 @@ convertIdentifier spec (c,_,_) prov (Pa.Identifier iAnn i) trefs =
         convert (Just (to, from, (Just tName, Just attName))) =
             let (Just oldTName) = getOldTableName (Just tName) trefs
                 tidf            = getTenantIdentifier tName oldTName
-                convertedIdf    = Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])[
-                                    Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to]) [idf, tidf]
-                                    , Pa.NumberLit iAnn (show c)]
+                convertedIdf    = createConvFunctionApplication from (
+                    createConvFunctionApplication to idf tidf) (Pa.NumberLit A.emptyAnnotation (show c))
                 newProv = addIdentifierToProvenance prov (to, from, (Just tName, Just attName)) idf tidf False True
             in Right $ (newProv, convertedIdf)
         convert _ = Right (prov, idf)

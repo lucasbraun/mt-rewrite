@@ -2,6 +2,7 @@ module Main where
 
 import Control.Monad
 import System.IO
+import qualified Data.Map as M
 
 import MtLib
 import TPCHSchema
@@ -101,7 +102,7 @@ runQueryFile spec setting dialect (infile, outfile)= do
 
     mapM_ (\query -> do
         let ws = words query
-        if (head (head ws) == '-') || (head (head ws) == '\\')
+        if (head (head ws) == '-') || (head (head ws) == '\\') || (head (head ws) == 'G')   -- the last one is for the GO command
             then do
                 -- it is just a comment or a pg command --> leave as is
                 hPutStrLn outputHandle query
@@ -168,6 +169,14 @@ getOptimizations s =
         f _     = MtUnknownOptimization
     in mtOptimizationsFromList $ map f ws
 
+adjustSpecForMsServer :: MtSchemaSpec -> MtSchemaSpec
+adjustSpecForMsServer spec =
+    let mapTableSpec (MtConvertible to from)        = MtConvertible ("dbo." ++ to) ("dbo." ++ from)
+        mapTableSpec attSpec                        = attSpec
+        mapSchemaSpec (FromMtSpecificTable table)   = FromMtSpecificTable (M.map mapTableSpec table)
+        mapSchemaSpec tableSpec                     = tableSpec
+    in  M.map mapSchemaSpec spec
+
 mainLoop :: MtSchemaSpec -> IO ()
 mainLoop spec = do
     putStrLn "Please write 'login'/'l'to login, 'test' to run a test for C=1 and D=[1,42], or any other word to quit "
@@ -201,8 +210,14 @@ mainLoop spec = do
                 putStrLn ("Successfully logged in with C=" ++ show c ++ " and D=" ++ show d ++ ".")
                 putStrLn ("Dialect: " ++ diName dialect ++ ", Optimizations: " ++ show o)
                 putStrLn "###############################################"
-                sessionLoop spec (c,d,o) dialect
-                mainLoop spec
+                if dialect == sqlServerDialect
+                    then do
+                        let spec2 = adjustSpecForMsServer spec
+                        sessionLoop spec2 (c,d,o) dialect
+                        mainLoop spec
+                    else do
+                        sessionLoop spec (c,d,o) dialect
+                        mainLoop spec
 
 main :: IO ()
 main = do

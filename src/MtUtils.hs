@@ -14,6 +14,7 @@ module MtUtils
     ,getOldTableName
     ,getTableAndAttName
     ,lookupAttributeComparability
+    ,createConvFunctionApplication
     ,ConversionFunctionsTriple
     ,getConversionFunctions
     ,isComparisonOp
@@ -118,6 +119,10 @@ lookupAttributeComparability spec (tableName, attributeName) trefs = do
     (FromMtSpecificTable tableSpec) <- M.lookup tName spec
     tSpec <- Just tableSpec
     M.lookup attName tSpec
+
+createConvFunctionApplication :: String -> Pa.ScalarExpr -> Pa.ScalarExpr -> Pa.ScalarExpr
+createConvFunctionApplication funcName exp1 exp2 =
+    Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc funcName])[exp1, exp2]
 
 type ConversionFunctionsTriple = (MtToUniversalFunc, MtFromUniversalFunc, TableAttributePair)
 -- gets the conversion functions and the tablename/attname pair

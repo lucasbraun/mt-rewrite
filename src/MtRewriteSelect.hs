@@ -100,10 +100,10 @@ rewriteIdentifier spec (c,_,o) prov (Pa.Identifier iAnn i) trefs b =
                 tidf            = getTenantIdentifier tName oldTName
                 result
                     | b == True =
-                        let universal   = Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to]) [idf, tidf] 
+                        let universal   = createConvFunctionApplication to idf tidf
                             rewritten
                                 | (MtClientPresentationPushUp) `elem` o = universal
-                                | otherwise = Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])[universal,Pa.NumberLit iAnn (show c)]
+                                | otherwise = createConvFunctionApplication from universal (Pa.NumberLit iAnn (show c))
                         in  (addIdentifierToProvenance prov (to, from, (Just tName, Just attName)) idf tidf True True, rewritten)
                     | otherwise = (addIdentifierToProvenance prov (to, from, (Just tName, Just attName)) idf tidf False False, idf)
             in Right $ result
