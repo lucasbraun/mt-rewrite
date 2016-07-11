@@ -14,6 +14,7 @@ module MtUtils
     ,getOldTableName
     ,getTableAndAttName
     ,lookupAttributeComparability
+    ,ConversionFunctionsTriple
     ,getConversionFunctions
     ,isComparisonOp
 --    ,isConstExpr
@@ -28,7 +29,7 @@ import qualified Database.HsSqlPpp.Annotation as A
 
 import qualified Data.Map as M
 import qualified Data.MultiMap as MM
-import qualified Data.Set as S
+-- import qualified Data.Set as S --> already imported somewhere else
 
 -- error handling
 data MtRewriteError = FromParseError Pa.ParseErrorExtra | FromMtRewriteError String

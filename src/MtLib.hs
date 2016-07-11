@@ -84,6 +84,12 @@ mtCompactPrint result dialect =
 -- This design has the advantage that it is simple and that we do not have to track any intermediary state
 -- This means it is context-free and somehow self-conained... or in other words every (sub-query) is in MT format
 -- All the other things should be deferred to optimizations
+--
+-- For optimizations:
+-- - for now we assume that conversion functions for numeric values are scalar and conversion functions for
+--   text do not have any special properties. For tpch, this is enough, for other benchmark, the definition of
+--   MtConvertible has to be extended with a definition whether a conversion function is scalar, linear, quadratic
+--   or none of these.
 
 -- parses and rewrites a single SQL statement terminated by ;
 mtRewrite :: MtSchemaSpec -> MtSetting -> String -> D.Dialect -> MtRewriteResult

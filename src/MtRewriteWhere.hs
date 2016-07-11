@@ -58,27 +58,25 @@ convertCases _ _ prov [] _ _ = Right (prov, [])
 
 -- right now is tailored towards Q22 --> does not yet cover all the cases
 -- we know that the necessary optimizations are enabled
--- for now, we assume that converting anything including a number literal, is fine
+-- for now, we convert only predicates where one side is constant and the other one is a field (but without a function applied)
+-- for some kinds of conversion functions (non-linear) this would not work! There we always have to convert to client format!
 convertComparisonOp :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
 convertComparisonOp spec (c,_,_) p0 (Pa.BinaryOp ann opName (Pa.Identifier a0 i) (Pa.NumberLit a1 s)) trefs _ =
     let triple  = getConversionFunctions spec trefs i
-        convert (Just (to, from, (Just tName, _)))    = 
-            let (Just oldTName) = getOldTableName (Just tName) trefs
-            in  Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc from]) [
-                    Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc to])[Pa.NumberLit a1 s, Pa.NumberLit A.emptyAnnotation (show c)],
-                    (getTenantIdentifier tName oldTName)]
-        convert _                       = Pa.NumberLit a1 s
-    in Right $ (p0, Pa.BinaryOp ann opName (Pa.Identifier a0 i) (convert triple))
+    in Right $ (p0, Pa.BinaryOp ann opName (Pa.Identifier a0 i) (convertLit triple trefs c (Pa.NumberLit a1 s)))
+convertComparisonOp spec (c,_,_) p0 (Pa.BinaryOp ann opName (Pa.NumberLit a1 s) (Pa.Identifier a0 i)) trefs _ =
+    let triple  = getConversionFunctions spec trefs i
+    in Right $ (p0, Pa.BinaryOp ann opName (convertLit triple trefs c (Pa.NumberLit a1 s)) (Pa.Identifier a0 i))
+convertComparisonOp spec (c,_,_) p0 (Pa.BinaryOp ann opName (Pa.Identifier a0 i) (Pa.StringLit a1 s)) trefs _ =
+    let triple  = getConversionFunctions spec trefs i
+    in Right $ (p0, Pa.BinaryOp ann opName (Pa.Identifier a0 i) (convertLit triple trefs c (Pa.StringLit a1 s)))
+convertComparisonOp spec (c,_,_) p0 (Pa.BinaryOp ann opName (Pa.StringLit a1 s) (Pa.Identifier a0 i)) trefs _ =
+    let triple  = getConversionFunctions spec trefs i
+    in Right $ (p0, Pa.BinaryOp ann opName (convertLit triple trefs c (Pa.StringLit a1 s)) (Pa.Identifier a0 i))
 convertComparisonOp spec (c,_,_) p0 (Pa.InPredicate ann (Pa.Identifier a0 i0) i (Pa.InList a1 exprs)) trefs _ =
     let triple  = getConversionFunctions spec trefs i0
-        convert (Just (to, from, (Just tName, _))) (Pa.NumberLit a s) =
-            let (Just oldTName) = getOldTableName (Just tName) trefs
-            in  Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc from]) [
-                    Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc to])[Pa.NumberLit a s, Pa.NumberLit A.emptyAnnotation (show c)],
-                    (getTenantIdentifier tName oldTName)]StringLit
-        convert _ l                                     = l
-    in Right $ (p0, Pa.InPredicate ann (Pa.Identifier a0 i0) i (Pa.InList a1 (map (convert triple) exprs)))
+    in Right $ (p0, Pa.InPredicate ann (Pa.Identifier a0 i0) i (Pa.InList a1 (map (convertLit triple trefs c) exprs)))
 -- default implementations for now   --> later on extend
 convertComparisonOp spec setting p0 (Pa.BinaryOp ann opName arg0 arg1) trefs rFun = do
      (p1,b1) <- convertScalarExpr spec setting p0 arg0 trefs rFun
@@ -89,22 +87,35 @@ convertComparisonOp spec setting p0 (Pa.InPredicate ann expr i list) trefs rFun 
      (p2,l) <- convertInList spec setting p1 list trefs rFun
      Right $ (p2, Pa.InPredicate ann h i l)
 
+-- at this point we know we have to bring the literal into the form given by the conversion function triple
+convertLit ::  Maybe ConversionFunctionsTriple -> Pa.TableRefList -> MtClient -> Pa.ScalarExpr -> Pa.ScalarExpr
+convertLit (Just (to, from, (Just tName, _))) trefs c (Pa.NumberLit a s) =
+    let (Just oldTName) = getOldTableName (Just tName) trefs
+    in  Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc from]) [
+            Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc to])[Pa.NumberLit a s, Pa.NumberLit A.emptyAnnotation (show c)],
+            (getTenantIdentifier tName oldTName)]
+convertLit (Just (to, from, (Just tName, _))) trefs c (Pa.StringLit a s) =
+    let (Just oldTName) = getOldTableName (Just tName) trefs
+    in  Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc from]) [
+            Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc to])[Pa.StringLit a s, Pa.StringLit A.emptyAnnotation (show c)],
+            (getTenantIdentifier tName oldTName)]
+convertLit _ _ _ l = l
+
+
 -- at this point, we certainly convert the identifier no matter what
--- TODO: CHANGE THIS!! In predicates, one cannot convert only to universal!! --> add the case statement to the REWRITE SELECT THINGY...
 convertIdentifier :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList 
         -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
-convertIdentifier spec (c,_,o) prov (Pa.Identifier iAnn i) trefs =
+convertIdentifier spec (c,_,_) prov (Pa.Identifier iAnn i) trefs =
     let triple  = getConversionFunctions spec trefs i
         idf     = Pa.Identifier iAnn i
         convert (Just (to, from, (Just tName, Just attName))) =
             let (Just oldTName) = getOldTableName (Just tName) trefs
                 tidf            = getTenantIdentifier tName oldTName
-                universal       = Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to]) [idf, tidf]
-                rewritten
-                    | MtClientPresentationPushUp `elem` o   = universal
-                    | otherwise = Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])[universal,Pa.NumberLit iAnn (show c)]
+                convertedIdf    = Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])[
+                                    Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to]) [idf, tidf]
+                                    , Pa.NumberLit iAnn (show c)]
                 newProv = addIdentifierToProvenance prov (to, from, (Just tName, Just attName)) idf tidf False True
-            in Right $ (newProv, rewritten)
+            in Right $ (newProv, convertedIdf)
         convert _ = Right (prov, idf)
     in convert triple
 convertIdentifier _ _ prov idf _ = Right (prov, idf)
