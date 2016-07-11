@@ -58,17 +58,15 @@ convertCases _ _ prov [] _ _ = Right (prov, [])
 
 -- should only be called with Conversion Push up enabled!
 -- if both args are identifiers (or derived from identifiers) [from different tables], bring to universal format,
--- otherwise compare constants
+-- otherwise compare constants (if conversion functions are linear, otherwise bring to client format)
+-- for now, only the tpch-relevant part of this functin is implemented
 convertComparisonOp :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
 convertComparisonOp spec setting p0 (Pa.BinaryOp ann opName arg0 arg1) trefs rFun = do
--- dummy implmenetation for now
+-- default implmentation for all other cases
      (p1,b1) <- convertScalarExpr spec setting p0 arg0 trefs rFun
      (p2,b2) <- convertScalarExpr spec setting p1 arg1 trefs rFun
      Right $ (p2, Pa.BinaryOp ann opName b1 b2)
-
--- convertLiteral :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
---         -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
 
 -- at this point, we certainly convert the identifier no matter what
 convertIdentifier :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList 
@@ -79,12 +77,11 @@ convertIdentifier spec (c,_,o) prov (Pa.Identifier iAnn i) trefs =
         convert (Just (to, from, (Just tName, Just attName))) =
             let (Just oldTName) = getOldTableName (Just tName) trefs
                 tidf            = getTenantIdentifier tName oldTName
-                universal       = Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to]) [idf, tidf]
-                rewritten
-                    | MtClientPresentationPushUp `elem` o   = universal
-                    | otherwise = Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])[universal,Pa.NumberLit iAnn (show c)]
+                converted       = Pa.App iAnn (Pa.Name iAnn [Pa.Nmc from])[
+                                    Pa.App iAnn (Pa.Name iAnn [Pa.Nmc to]) [idf, tidf]
+                                    , Pa.NumberLit iAnn (show c)]
                 newProv = addIdentifierToProvenance prov (to, from, (Just tName, Just attName)) idf tidf False True
-            in Right $ (newProv, rewritten)
+            in Right $ (newProv, converted)
         convert _ = Right (prov, idf)
     in convert triple
 convertIdentifier _ _ prov idf _ = Right (prov, idf)
