@@ -130,6 +130,7 @@ getConversionFunctions s t i  =
 
 isComparisonOp :: Pa.ScalarExpr -> Bool
 isComparisonOp (Pa.BinaryOp _ (Pa.Name _ [Pa.Nmc opName]) _ _) = opName `elem` ["=", "<>", "<", ">", ">=", "<="]
+isComparisonOp (Pa.InPredicate _ _ _ (Pa.InList _ _)) = True
 isComparisonOp _ = False
 
 ---- anything that does not include a convertible attribute is supposed to be constant -> subqueries are not supposed constant...

@@ -56,21 +56,41 @@ convertCases spec setting p0 ((elist, expr):rest) trefs rFun = do
     Right (p3, ((h, e):l))
 convertCases _ _ prov [] _ _ = Right (prov, [])
 
--- should only be called with Conversion Push up enabled!
--- if both args are identifiers (or derived from identifiers) [from different tables], bring to universal format,
--- otherwise compare constants
+-- right now is tailored towards Q22 --> does not yet cover all the cases
+-- we know that the necessary optimizations are enabled
+-- for now, we assume that converting anything including a number literal, is fine
 convertComparisonOp :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
+convertComparisonOp spec (c,_,_) p0 (Pa.BinaryOp ann opName (Pa.Identifier a0 i) (Pa.NumberLit a1 s)) trefs _ =
+    let triple  = getConversionFunctions spec trefs i
+        convert (Just (to, from, (Just tName, _)))    = 
+            let (Just oldTName) = getOldTableName (Just tName) trefs
+            in  Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc from]) [
+                    Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc to])[Pa.NumberLit a1 s, Pa.NumberLit A.emptyAnnotation (show c)],
+                    (getTenantIdentifier tName oldTName)]
+        convert _                       = Pa.NumberLit a1 s
+    in Right $ (p0, Pa.BinaryOp ann opName (Pa.Identifier a0 i) (convert triple))
+convertComparisonOp spec (c,_,_) p0 (Pa.InPredicate ann (Pa.Identifier a0 i0) i (Pa.InList a1 exprs)) trefs _ =
+    let triple  = getConversionFunctions spec trefs i0
+        convert (Just (to, from, (Just tName, _))) (Pa.NumberLit a s) =
+            let (Just oldTName) = getOldTableName (Just tName) trefs
+            in  Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc from]) [
+                    Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc to])[Pa.NumberLit a s, Pa.NumberLit A.emptyAnnotation (show c)],
+                    (getTenantIdentifier tName oldTName)]StringLit
+        convert _ l                                     = l
+    in Right $ (p0, Pa.InPredicate ann (Pa.Identifier a0 i0) i (Pa.InList a1 (map (convert triple) exprs)))
+-- default implementations for now   --> later on extend
 convertComparisonOp spec setting p0 (Pa.BinaryOp ann opName arg0 arg1) trefs rFun = do
--- dummy implmenetation for now
      (p1,b1) <- convertScalarExpr spec setting p0 arg0 trefs rFun
      (p2,b2) <- convertScalarExpr spec setting p1 arg1 trefs rFun
      Right $ (p2, Pa.BinaryOp ann opName b1 b2)
-
--- convertLiteral :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun
---         -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
+convertComparisonOp spec setting p0 (Pa.InPredicate ann expr i list) trefs rFun = do
+     (p1,h) <- convertScalarExpr spec setting p0 expr trefs rFun
+     (p2,l) <- convertInList spec setting p1 list trefs rFun
+     Right $ (p2, Pa.InPredicate ann h i l)
 
 -- at this point, we certainly convert the identifier no matter what
+-- TODO: CHANGE THIS!! In predicates, one cannot convert only to universal!! --> add the case statement to the REWRITE SELECT THINGY...
 convertIdentifier :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList 
         -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
 convertIdentifier spec (c,_,o) prov (Pa.Identifier iAnn i) trefs =
@@ -104,9 +124,8 @@ convertScalarExpr spec (c,d,o) p0 (Pa.BinaryOp ann opName arg0 arg1) trefs rFun 
             convertComparisonOp spec (c,d,o) p0
                 (Pa.BinaryOp ann opName arg0 arg1) trefs rFun
         else do
-            let setting = (c,d,o)
-            (p1,b1) <- convertScalarExpr spec setting p0 arg0 trefs rFun
-            (p2,b2) <- convertScalarExpr spec setting p1 arg1 trefs rFun
+            (p1,b1) <- convertScalarExpr spec (c,d,o) p0 arg0 trefs rFun
+            (p2,b2) <- convertScalarExpr spec (c,d,o) p1 arg1 trefs rFun
             Right $ (p2, Pa.BinaryOp ann opName b1 b2)
 convertScalarExpr spec setting p0 (Pa.SpecialOp ann opName args) trefs rFun = do
     (p1,l) <- convertScalarExprList spec setting p0 args trefs rFun
@@ -117,10 +136,15 @@ convertScalarExpr spec setting p0 (Pa.App ann funName args) trefs rFun = do
 convertScalarExpr spec setting p0 (Pa.Parens ann expr) trefs rFun = do
     (p1,h) <- convertScalarExpr spec setting p0 expr trefs rFun
     Right $ (p1, Pa.Parens ann h)
-convertScalarExpr spec setting p0 (Pa.InPredicate ann expr i list) trefs rFun = do
-    (p1,h) <- convertScalarExpr spec setting p0 expr trefs rFun
-    (p2,l) <- convertInList spec setting p1 list trefs rFun
-    Right $ (p2, Pa.InPredicate ann h i l)
+convertScalarExpr spec (c,d,o) p0 (Pa.InPredicate ann expr i list) trefs rFun =
+    if MtConversionPushUp `elem` o && isComparisonOp (Pa.InPredicate ann expr i list)
+        then
+            convertComparisonOp spec (c,d,o) p0
+                (Pa.InPredicate ann expr i list) trefs rFun
+        else do
+            (p1,h) <- convertScalarExpr spec (c,d,o) p0 expr trefs rFun
+            (p2,l) <- convertInList spec (c,d,o) p1 list trefs rFun
+            Right $ (p2, Pa.InPredicate ann h i l)
 convertScalarExpr spec setting p0 (Pa.Exists ann sel) trefs rFun = do
     (p1,h) <- rFun spec setting p0 sel trefs
     Right $ (p1, Pa.Exists ann h)
