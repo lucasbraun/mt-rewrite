@@ -1,6 +1,5 @@
 module MtRewriteSelect (
     rewriteSelectList
-    ,rewriteUpperMostSelectList
 ) where
 
 import qualified Database.HsSqlPpp.Parse as Pa
@@ -8,41 +7,46 @@ import qualified Database.HsSqlPpp.Parse as Pa
 import MtTypes
 import MtUtils
 
-rewriteSelectList :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.SelectList -> Pa.TableRefList -> RewriteQueryFun
+rewriteSelectList :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.SelectList -> Pa.TableRefList -> RewriteQueryFun -> Bool
         -> Either MtRewriteError (Provenance, Pa.SelectList)
-rewriteSelectList spec (c,d,o) p0 (Pa.SelectList ann items) trefs rFun = do
+rewriteSelectList spec (c,d,o) p0 (Pa.SelectList ann items) trefs rFun isUpperMost = do
     (p1,t1)    <- rewriteSelectItems spec (c,d,o) p0 items trefs rFun
     let p2      = flattenProvenance p1
     let p3      = pruneProvenance p2
     if MtConversionPushUp `elem` o
-        then do
-            let (p4,t2) = consolidateSelectItems t1 p3
-            Right $ (p4, Pa.SelectList ann t2)
+        then
+            if isUpperMost
+                then Right $ (p3, Pa.SelectList ann (rewriteUpperMostSelectList (c,d,o) p3 t1))
+            else do
+                let (p4,t2) = consolidateSelectItems t1 p3
+                Right $ (p4, Pa.SelectList ann t2)
         else Right $ (p3, Pa.SelectList ann t1)
 
 -- adds client presentation to necessary attributes
 -- only makes sence if client-push-up is enabled
-rewriteUpperMostSelectList :: MtSetting -> Provenance -> Pa.SelectList -> Pa.SelectList
-rewriteUpperMostSelectList (c,d,o) prov (Pa.SelectList a selItems)
+rewriteUpperMostSelectList :: MtSetting -> Provenance -> Pa.SelectItemList -> Pa.SelectItemList
+rewriteUpperMostSelectList (c,d,o) prov selItems
     | MtClientPresentationPushUp `elem` o   =
         let apply (Pa.SelectItem ann scalExp newName: items)    =
-                (Pa.SelectItem ann (rewriteUpperMostScalarExpr (c,d,o) prov scalExp) newName) : items
+                (Pa.SelectItem ann (rewriteUpperMostScalarExpr (c,d,o) prov scalExp) newName) : (apply items)
             apply (Pa.SelExp ann scalExp: items)                =
-                (Pa.SelExp ann (rewriteUpperMostScalarExpr (c,d,o) prov scalExp)) : items
+                (Pa.SelExp ann (rewriteUpperMostScalarExpr (c,d,o) prov scalExp)) : (apply items)
             apply []    = []
-        in Pa.SelectList a (apply selItems)
-    | otherwise = Pa.SelectList a selItems
+        in apply selItems
+    | otherwise = selItems
 
 -- apps have to be treated specially in case it is the application of a convertion function
-rewriteUpperMostApplication :: MtClient -> Provenance -> Pa.ScalarExpr -> Pa.ScalarExpr
-rewriteUpperMostApplication c prov (Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [Pa.Identifier a2 i, arg0])
+rewriteUpperMostApplication :: MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.ScalarExpr
+rewriteUpperMostApplication (c,d,o) prov (Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [Pa.Identifier a2 i, arg0])
     | containsString to "ToUniversal" =
         let idf                 = Pa.Identifier a2 i
             ([provItem],_)       = getProvenanceItemFromIdf idf prov
         in  createConvFunctionApplication (fromUniversal(provItem))
             (Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [idf, arg0]) (Pa.NumberLit a0 (show c))
-    | otherwise = Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [Pa.Identifier a2 i, arg0]
-rewriteUpperMostApplication _ _ ex = ex
+    | otherwise = Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [
+        rewriteUpperMostScalarExpr (c,d,o) prov (Pa.Identifier a2 i),
+        rewriteUpperMostScalarExpr (c,d,o) prov arg0]
+rewriteUpperMostApplication setting prov (Pa.App a n exps) = Pa.App a n (map (rewriteUpperMostScalarExpr setting prov) exps)
 
 -- used by rewriteUpperMostSelectList to do the final rewrite to client presentation
 rewriteUpperMostScalarExpr :: MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.ScalarExpr
@@ -52,7 +56,7 @@ rewriteUpperMostScalarExpr setting prov (Pa.BinaryOp a n exp1 exp2) = Pa.BinaryO
         (rewriteUpperMostScalarExpr setting prov exp1) (rewriteUpperMostScalarExpr setting prov exp2)
 rewriteUpperMostScalarExpr setting prov (Pa.SpecialOp a n exps) = Pa.SpecialOp a n (
         map (rewriteUpperMostScalarExpr setting prov) exps)
-rewriteUpperMostScalarExpr (c,_,_) prov (Pa.App a n epxs) = Pa.App a n (map (rewriteUpperMostApplication c prov) epxs)
+rewriteUpperMostScalarExpr setting prov (Pa.App a n exps) = rewriteUpperMostApplication setting prov (Pa.App a n exps)
 rewriteUpperMostScalarExpr setting prov (Pa.Parens a ex) = Pa.Parens a (rewriteUpperMostScalarExpr setting prov ex)
 -- TODO: implement CASES
 rewriteUpperMostScalarExpr (c,_,o) prov (Pa.Identifier iAnn i) = 

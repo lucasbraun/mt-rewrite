@@ -91,8 +91,8 @@ pruneProvenance prov =
         prune ((k,p):ps)= 
             let c   = converted(p)
                 sc  = shouldConvert(p)
-                pin False True  = ps
-                pin _ _         = (k,p):ps
+                pin False True  = prune ps
+                pin _ _         = (k,p):(prune ps)
             in pin c sc
         prune []    = []
     in  MM.fromList (prune pList)
