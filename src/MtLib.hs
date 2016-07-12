@@ -116,15 +116,15 @@ rewriteStatement _ _ statement = Left $ FromMtRewriteError $ "Rewrite function n
 rewriteQuery :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError (Provenance, Pa.QueryExpr)
 rewriteQuery spec setting p0 (Pa.Select ann selDistinct selSelectList selTref selWhere
     selGroupBy selHaving selOrderBy selLimit selOffset selOption) trefs = do
-        let isUpperMost     = null trefs          -- is this query uppermost SQL query?
         let allTrefs        = selTref ++ trefs    -- ordering matters here as the first value that fits is taken
         (p1,newTrefs)      <- rewriteTrefList spec setting p0 selTref
         (p2,filteredWhere) <- rewriteWhereClause spec setting p1 selWhere selTref allTrefs rewriteQuery
         (p3,newHaving)     <- rewriteHavingClause spec setting p2 selHaving allTrefs rewriteQuery
         (p4,newSelectList) <- rewriteSelectList spec setting p3 selSelectList selTref rewriteQuery
-        let newGroupBy    = rewriteGroupByClause spec selTref selGroupBy
-        let newOrderBy    = rewriteOrderByClause spec selTref selOrderBy
-        Right $ (p4, Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
+        let finalSelectList = getFinalSelectList (null trefs) setting p4 newSelectList 
+        let newGroupBy      = rewriteGroupByClause spec selTref selGroupBy
+        let newOrderBy      = rewriteOrderByClause spec selTref selOrderBy
+        Right $ (p4, Pa.Select ann selDistinct finalSelectList newTrefs filteredWhere
             newGroupBy
             newHaving
             newOrderBy
@@ -134,6 +134,10 @@ rewriteQuery _ _ _ query _ = Left $ FromMtRewriteError $ "Rewrite function not y
 -- ## REWRITE FUNCTIONS ##
 -- for small things... for SELECT and WHERE clause, there are separate files
 -- ########################
+
+getFinalSelectList :: Bool -> MtSetting -> Provenance -> Pa.SelectList -> Pa.SelectList
+getFinalSelectList True setting prov list = rewriteUpperMostSelectList setting prov list
+getFinalSelectList False _ _ list         = list
 
 rewriteTrefList :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.TableRefList -> Either MtRewriteError (Provenance, Pa.TableRefList)
 rewriteTrefList spec setting p0 (Pa.SubTref ann sel:trefs) = do

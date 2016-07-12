@@ -4,12 +4,18 @@ module MtUtils
     ,ProvenanceItem(..)
     ,Provenance
     ,addIdentifierToProvenance
+    ,getProvenanceItem
+    ,getProvenanceItemFromIdf
+    ,replaceProvenanceItem
+    ,flattenProvenance
+    ,pruneProvenance
     ,emptyProvenance
     ,RewriteQueryFun
     ,CasesType
     ,TableAttributePair
     ,getTenantAttributeName
     ,getTenantIdentifier
+    ,getIntermediateTenantIdentifier
     ,isGlobalTable
     ,getOldTableName
     ,getTableAndAttName
@@ -61,6 +67,36 @@ addIdentifierToProvenance p (to,from,(_, Just attName)) (Pa.Identifier _ i) tena
 -- default... check if that is correct
 addIdentifierToProvenance p _ _ _ _ _ = p
 
+getProvenanceItem :: MtAttributeName -> Provenance -> [ProvenanceItem]
+getProvenanceItem attName = MM.lookup attName
+
+-- returns prov item - attributename pair
+getProvenanceItemFromIdf :: Pa.ScalarExpr -> Provenance -> ([ProvenanceItem], MtAttributeName)
+getProvenanceItemFromIdf (Pa.Identifier _ (Pa.Name _ nameComps)) prov =
+    let (Pa.Nmc attName)    = last nameComps
+    in  (getProvenanceItem attName prov, attName)
+
+-- replaces the provenance item identified with attribute name by a new version
+replaceProvenanceItem :: Provenance -> MtAttributeName -> ProvenanceItem -> Provenance
+replaceProvenanceItem prov attName item = MM.insert attName item (MM.delete attName prov)
+
+-- simply collapses multi-map to map by giving priority to select items (which are typically the last item added per key)
+flattenProvenance :: Provenance -> Provenance
+flattenProvenance prov = MM.fromList (map (\(k,as) -> (k, last as)) (MM.assocs prov))
+
+-- decides what to do with provenance hints (Provenance items with ShouldConvert true, but converted false): for the moment we just sort them out
+pruneProvenance :: Provenance -> Provenance
+pruneProvenance prov =
+    let pList = MM.toList prov
+        prune ((k,p):ps)= 
+            let c   = converted(p)
+                sc  = shouldConvert(p)
+                pin False True  = ps
+                pin _ _         = (k,p):ps
+            in pin c sc
+        prune []    = []
+    in  MM.fromList (prune pList)
+
 -- allows MtRewriteSelect and MtRewriteWhere to call recurively back into MtLib using a Function rather than an import
 type RewriteQueryFun = MtSchemaSpec -> MtSetting -> Provenance -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError (Provenance, Pa.QueryExpr)
 type CasesType = Pa.CaseScalarExprListScalarExprPairList
@@ -74,6 +110,11 @@ getTenantAttributeName s = s ++ "_tenant_key"
 -- takes a (alias of a) table name and an mt table name and constructs the corresponding identifier
 getTenantIdentifier :: String -> MtTableName -> Pa.ScalarExpr
 getTenantIdentifier tName mtName = Pa.Identifier A.emptyAnnotation $ Pa.Name A.emptyAnnotation [Pa.Nmc tName, Pa.Nmc $ getTenantAttributeName mtName]
+
+-- creates a unique, reasonable name for intermediate tenant keys
+getIntermediateTenantIdentifier :: Pa.ScalarExpr -> String
+getIntermediateTenantIdentifier (Pa.Identifier _ (Pa.Name _ nameComps)) =
+    foldl (\s1 (Pa.Nmc s2) -> (s1 ++ "_" ++ s2)) "tk_" nameComps
 
 -- checks whether a table is global. Assumes anything not in the schema spec is also global
 isGlobalTable :: MtSchemaSpec -> Maybe MtTableName -> Bool

@@ -1,5 +1,6 @@
 module MtRewriteSelect (
     rewriteSelectList
+    ,rewriteUpperMostSelectList
 ) where
 
 import qualified Database.HsSqlPpp.Parse as Pa
@@ -9,47 +10,127 @@ import MtUtils
 
 rewriteSelectList :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.SelectList -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, Pa.SelectList)
-rewriteSelectList spec setting p0 (Pa.SelectList ann items) trefs rFun = do
-    (p1,t) <- rewriteSelectItems spec setting p0 items trefs rFun
-    Right $ (p1, Pa.SelectList ann t)
+rewriteSelectList spec (c,d,o) p0 (Pa.SelectList ann items) trefs rFun = do
+    (p1,t1)    <- rewriteSelectItems spec (c,d,o) p0 items trefs rFun
+    let p2      = flattenProvenance p1
+    let p3      = pruneProvenance p2
+    if MtConversionPushUp `elem` o
+        then do
+            let (p4,t2) = consolidateSelectItems t1 p3
+            Right $ (p4, Pa.SelectList ann t2)
+        else Right $ (p3, Pa.SelectList ann t1)
 
 -- adds client presentation to necessary attributes
--- rewriteUpperMostSelectList
+-- only makes sence if client-push-up is enabled
+rewriteUpperMostSelectList :: MtSetting -> Provenance -> Pa.SelectList -> Pa.SelectList
+rewriteUpperMostSelectList (c,d,o) prov (Pa.SelectList a selItems)
+    | MtClientPresentationPushUp `elem` o   =
+        let apply (Pa.SelectItem ann scalExp newName: items)    =
+                (Pa.SelectItem ann (rewriteUpperMostScalarExpr (c,d,o) prov scalExp) newName) : items
+            apply (Pa.SelExp ann scalExp: items)                =
+                (Pa.SelExp ann (rewriteUpperMostScalarExpr (c,d,o) prov scalExp)) : items
+            apply []    = []
+        in Pa.SelectList a (apply selItems)
+    | otherwise = Pa.SelectList a selItems
+
+-- apps have to be treated specially in case it is the application of a convertion function
+rewriteUpperMostApplication :: MtClient -> Provenance -> Pa.ScalarExpr -> Pa.ScalarExpr
+rewriteUpperMostApplication c prov (Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [Pa.Identifier a2 i, arg0])
+    | containsString to "ToUniversal" =
+        let idf                 = Pa.Identifier a2 i
+            ([provItem],_)       = getProvenanceItemFromIdf idf prov
+        in  createConvFunctionApplication (fromUniversal(provItem))
+            (Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [idf, arg0]) (Pa.NumberLit a0 (show c))
+    | otherwise = Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [Pa.Identifier a2 i, arg0]
+rewriteUpperMostApplication _ _ ex = ex
+
+-- used by rewriteUpperMostSelectList to do the final rewrite to client presentation
+rewriteUpperMostScalarExpr :: MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.ScalarExpr
+rewriteUpperMostScalarExpr setting prov (Pa.PrefixOp a n ex) = Pa.PrefixOp a n (rewriteUpperMostScalarExpr setting prov ex)
+rewriteUpperMostScalarExpr setting prov (Pa.PostfixOp a n ex) = Pa.PostfixOp a n (rewriteUpperMostScalarExpr setting prov ex)
+rewriteUpperMostScalarExpr setting prov (Pa.BinaryOp a n exp1 exp2) = Pa.BinaryOp a n
+        (rewriteUpperMostScalarExpr setting prov exp1) (rewriteUpperMostScalarExpr setting prov exp2)
+rewriteUpperMostScalarExpr setting prov (Pa.SpecialOp a n exps) = Pa.SpecialOp a n (
+        map (rewriteUpperMostScalarExpr setting prov) exps)
+rewriteUpperMostScalarExpr (c,_,_) prov (Pa.App a n epxs) = Pa.App a n (map (rewriteUpperMostApplication c prov) epxs)
+rewriteUpperMostScalarExpr setting prov (Pa.Parens a ex) = Pa.Parens a (rewriteUpperMostScalarExpr setting prov ex)
+-- TODO: implement CASES
+rewriteUpperMostScalarExpr (c,_,o) prov (Pa.Identifier iAnn i) = 
+    let idf                 = Pa.Identifier iAnn i
+        (provItems, _)      = getProvenanceItemFromIdf idf prov
+        apply [provItem]    = 
+            let conv
+                    | (MtConversionPushUp `elem` o) && (not (converted(provItem))) =
+                        createConvFunctionApplication (toUniversal(provItem)) idf (tenantField(provItem))
+                    | otherwise = idf
+            in  createConvFunctionApplication (fromUniversal(provItem)) conv (Pa.NumberLit iAnn (show c))
+        apply _           = idf        -- default case where item is not special in any regard
+    in apply provItems
+-- the rest of the scalar exprs should not matter
+rewriteUpperMostScalarExpr _ _ e    = e
 
 -- rewrites converted expressions that are SelectExprs to SelectItems by using their old name
--- consolidates provenance (collapse from Multimap to map)
--- for the items in provencance that are not converted, adds tenant identifier to selection
---consolidateSelectItems :: [Pa.SelectItem] -> Provenance -> (Provenance, [Pa.SelectItem])
+-- for the items in provenance that are not converted (and not renamed), adds tenant identifier to selection
+-- and updates provenance accordingly
+-- for the moment, implementation focuses on TPC-H Q22
+consolidateSelectItems :: Pa.SelectItemList -> Provenance -> (Provenance, Pa.SelectItemList)
+consolidateSelectItems (Pa.SelExp ann (Pa.Identifier i a): items) prov =
+    let (p, newItems)           = consolidateSelectItems items prov
+        item                    = Pa.Identifier i a
+        (provItems, attName)    = getProvenanceItemFromIdf item prov
+        consolidate [provItem]  =
+            let tenantFieldName = getIntermediateTenantIdentifier item
+                newTenantField  = Pa.SelectItem ann (tenantField(provItem)) (Pa.Nmc tenantFieldName)
+                newProvItem     = ProvenanceItem {fieldName=fieldName(provItem), toUniversal=toUniversal(provItem),
+                    fromUniversal=fromUniversal(provItem),
+                    tenantField=Pa.Identifier ann (Pa.Name ann [Pa.Nmc tenantFieldName]),
+                    converted=converted(provItem), shouldConvert=shouldConvert(provItem)}
+                newProv         = replaceProvenanceItem p attName newProvItem
+            in  (newProv, (Pa.SelExp ann item:newTenantField:newItems))
+        consolidate _           = (p, Pa.SelExp ann item :newItems)        -- default case where item is not special in any regard
+    in consolidate provItems
+consolidateSelectItems (item:items) prov =
+    let (p, newItems)   = consolidateSelectItems items prov
+    in  (p, item:newItems)
+consolidateSelectItems [] prov  = (prov, [])
 
-rewriteSelectItems :: MtSchemaSpec -> MtSetting -> Provenance -> [Pa.SelectItem] -> Pa.TableRefList -> RewriteQueryFun
-        -> Either MtRewriteError (Provenance, [Pa.SelectItem])
+rewriteSelectItems :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.SelectItemList -> Pa.TableRefList -> RewriteQueryFun
+        -> Either MtRewriteError (Provenance, Pa.SelectItemList)
 rewriteSelectItems spec setting p0 (item:items) trefs rFun = do
     (p1,h) <- rewriteSelectItem spec setting p0 item trefs rFun
     (p2,t) <- rewriteSelectItems spec setting p1 items trefs rFun
     Right $ (p2, h : t)
 rewriteSelectItems _ _ prov [] _ _ = Right (prov, [])
 
+-- rewrites each select item according to the rules
+-- rewrites converted expressions that are SelectExprs to SelectItems by using their old name
 rewriteSelectItem :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.SelectItem -> Pa.TableRefList -> RewriteQueryFun
         -> Either MtRewriteError (Provenance, Pa.SelectItem)
 rewriteSelectItem spec (c,d,o) p0 (Pa.SelExp ann scalExp) trefs rFun = do
     (p1,newExp) <- rewriteScalarExpr spec (c,d,o) p0 scalExp trefs rFun (not (MtConversionPushUp `elem` o))
     -- 'create' makes sure that a converted attribute gets renamed to its original name
-    -- this thing has to change and has to become part of consolidateSelectItems...
     let create (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
                 [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
                     [Pa.Identifier a4 i, arg0]
                 ,Pa.NumberLit a5 arg1]) 
-                    | containsString to "ToUniversal" && containsString from "FromUniversal"   = let (_ , Just attName) = getTableAndAttName i
+                    | containsString to "ToUniversal" && containsString from "FromUniversal" =
+                        let (_ , Just attName) = getTableAndAttName i
                         in  Pa.SelectItem ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
                             [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
                                 [Pa.Identifier a4 i, arg0]
                             ,Pa.NumberLit a5 arg1]) (Pa.Nmc attName)
-                    | otherwise                                                         =
-                        Pa.SelExp ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
+                    | otherwise = Pa.SelExp ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
                             [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
                                 [Pa.Identifier a4 i, arg0]
                             ,Pa.NumberLit a5 arg1])
-        create expr                                                                     = Pa.SelExp ann expr
+        create (Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [Pa.Identifier a2 i, arg0])
+                    | containsString to "ToUniversal" = 
+                        let (_ , Just attName) = getTableAndAttName i
+                        in  Pa.SelectItem ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc to])
+                            [Pa.Identifier a2 i, arg0]) (Pa.Nmc attName)
+                    | otherwise = Pa.SelExp ann (
+                        (Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [Pa.Identifier a2 i, arg0]))
+        create expr = Pa.SelExp ann expr
     Right $ (p1,create newExp)
 rewriteSelectItem spec (c,d,o) p0 (Pa.SelectItem ann scalExp newName) trefs rFun = do
     (p1,h) <- rewriteScalarExpr spec (c,d,o) p0 scalExp trefs rFun (not (MtConversionPushUp `elem` o))

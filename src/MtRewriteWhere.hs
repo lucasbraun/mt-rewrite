@@ -99,7 +99,6 @@ convertLit (Just (to, from, (Just tName, _))) trefs c (Pa.StringLit a s) =
         createConvFunctionApplication to (Pa.StringLit a s) (Pa.NumberLit A.emptyAnnotation (show c))) (getTenantIdentifier tName oldTName)
 convertLit _ _ _ l = l
 
-
 -- at this point, we certainly convert the identifier no matter what
 convertIdentifier :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList 
         -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
