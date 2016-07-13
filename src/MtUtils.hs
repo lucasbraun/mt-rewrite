@@ -3,9 +3,9 @@ module MtUtils
     MtRewriteError(..)
     ,ProvenanceItem(..)
     ,Provenance
+    ,addToProvenance
     ,addIdentifierToProvenance
     ,getProvenanceItem
-    ,getProvenanceItemFromIdf
     ,replaceProvenanceItem
     ,flattenProvenance
     ,pruneProvenance
@@ -59,6 +59,10 @@ emptyProvenance :: Provenance
 emptyProvenance = MM.empty
 
 -- helper functions for provenance 
+
+addToProvenance :: MtAttributeName -> ProvenanceItem -> Provenance -> Provenance
+addToProvenance n i p   = MM.insert n i p
+
 addIdentifierToProvenance :: Provenance -> ConversionFunctionsTriple -> Pa.ScalarExpr -> Pa.ScalarExpr -> Bool -> Bool -> Provenance
 addIdentifierToProvenance p (to,from,(_, Just attName)) (Pa.Identifier _ i) tenant convert should =
     let pItem = ProvenanceItem {fieldName=i, toUniversal=to, fromUniversal=from,
@@ -67,14 +71,28 @@ addIdentifierToProvenance p (to,from,(_, Just attName)) (Pa.Identifier _ i) tena
 -- default... check if that is correct
 addIdentifierToProvenance p _ _ _ _ _ = p
 
-getProvenanceItem :: MtAttributeName -> Provenance -> [ProvenanceItem]
-getProvenanceItem attName = MM.lookup attName
+getProvenanceItemFromName :: MtAttributeName -> Provenance -> [ProvenanceItem]
+getProvenanceItemFromName attName = MM.lookup attName
 
--- returns prov item - attributename pair
-getProvenanceItemFromIdf :: Pa.ScalarExpr -> Provenance -> ([ProvenanceItem], MtAttributeName)
-getProvenanceItemFromIdf (Pa.Identifier _ (Pa.Name _ nameComps)) prov =
+type ProvItemAttPair = ([ProvenanceItem], MtAttributeName)
+combineProvItemPairs :: ProvItemAttPair ->  ProvItemAttPair -> ProvItemAttPair
+combineProvItemPairs ([], "") p = p
+combineProvItemPairs p ([], "") = p
+combineProvItemPairs p _        = p     -- if both are non-empty, they SHOULD have the same conversion function, attname does not matter that much
+
+-- returns prov item - attributename pair from a (nested) scalar expr
+-- prov item is a list which can be empty, typically, when called after pruning, it returns exactly one or zero items
+getProvenanceItem :: Pa.ScalarExpr -> Provenance -> ([ProvenanceItem], MtAttributeName)
+getProvenanceItem (Pa.App _ _ l) prov   = foldl1 combineProvItemPairs (map (\x -> getProvenanceItem x prov) l)
+getProvenanceItem (Pa.BinaryOp _ _ e1 e2) prov =
+    let n1  = getProvenanceItem e1 prov
+        n2  = getProvenanceItem e2 prov
+    in combineProvItemPairs n1 n2
+getProvenanceItem (Pa.Identifier _ (Pa.Name _ nameComps)) prov =
     let (Pa.Nmc attName)    = last nameComps
-    in  (getProvenanceItem attName prov, attName)
+    in  (getProvenanceItemFromName attName prov, attName)
+-- default for literals and other non-relevant things
+getProvenanceItem _ _ = ([], "")
 
 -- replaces the provenance item identified with attribute name by a new version
 replaceProvenanceItem :: Provenance -> MtAttributeName -> ProvenanceItem -> Provenance
@@ -166,7 +184,7 @@ createConvFunctionApplication funcName exp1 exp2 =
     Pa.App A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc funcName])[exp1, exp2]
 
 type ConversionFunctionsTriple = (MtToUniversalFunc, MtFromUniversalFunc, TableAttributePair)
--- gets the conversion functions and the tablename/attname pair
+-- gets the conversion functions and the tablename/attname pair for a specific name of an identifier
 getConversionFunctions :: MtSchemaSpec -> Pa.TableRefList -> Pa.Name -> Maybe ConversionFunctionsTriple
 getConversionFunctions s t i  =
     let pair = getTableAndAttName i

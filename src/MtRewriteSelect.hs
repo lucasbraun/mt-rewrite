@@ -40,13 +40,25 @@ rewriteUpperMostApplication :: MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.Sc
 rewriteUpperMostApplication (c,d,o) prov (Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [Pa.Identifier a2 i, arg0])
     | containsString to "ToUniversal" =
         let idf                 = Pa.Identifier a2 i
-            ([provItem],_)       = getProvenanceItemFromIdf idf prov
+            ([provItem],_)       = getProvenanceItem idf prov
         in  createConvFunctionApplication (fromUniversal(provItem))
             (Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [idf, arg0]) (Pa.NumberLit a0 (show c))
     | otherwise = Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [
         rewriteUpperMostScalarExpr (c,d,o) prov (Pa.Identifier a2 i),
         rewriteUpperMostScalarExpr (c,d,o) prov arg0]
 rewriteUpperMostApplication setting prov (Pa.App a n exps) = Pa.App a n (map (rewriteUpperMostScalarExpr setting prov) exps)
+
+rewriteUpperMostMaybe :: MtSetting -> Provenance -> Maybe Pa.ScalarExpr -> Maybe Pa.ScalarExpr
+rewriteUpperMostMaybe setting prov (Just expr) = Just $ rewriteUpperMostScalarExpr setting prov expr
+rewriteUpperMostMaybe _ _ Nothing   = Nothing
+
+rewriteUpperMostCases :: MtSetting -> Provenance -> CasesType -> CasesType
+rewriteUpperMostCases setting prov ((elist, expr):rest) =
+    let h   = map (rewriteUpperMostScalarExpr setting prov) elist
+        e   = rewriteUpperMostScalarExpr setting prov expr
+        l   = rewriteUpperMostCases setting prov rest
+    in  (h,e):l
+rewriteUpperMostCases _ _ [] = []
 
 -- used by rewriteUpperMostSelectList to do the final rewrite to client presentation
 rewriteUpperMostScalarExpr :: MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.ScalarExpr
@@ -58,10 +70,15 @@ rewriteUpperMostScalarExpr setting prov (Pa.SpecialOp a n exps) = Pa.SpecialOp a
         map (rewriteUpperMostScalarExpr setting prov) exps)
 rewriteUpperMostScalarExpr setting prov (Pa.App a n exps) = rewriteUpperMostApplication setting prov (Pa.App a n exps)
 rewriteUpperMostScalarExpr setting prov (Pa.Parens a ex) = Pa.Parens a (rewriteUpperMostScalarExpr setting prov ex)
--- TODO: implement CASES
+rewriteUpperMostScalarExpr setting prov (Pa.Case ann cases els) = 
+    let newCases    = rewriteUpperMostCases setting prov cases
+        newElse     = rewriteUpperMostMaybe setting prov els
+    in  Pa.Case ann newCases newElse
+rewriteUpperMostScalarExpr setting prov (Pa.AggregateApp ann d exprs o) =
+    Pa.AggregateApp ann d (rewriteUpperMostScalarExpr setting prov exprs) o
 rewriteUpperMostScalarExpr (c,_,o) prov (Pa.Identifier iAnn i) = 
     let idf                 = Pa.Identifier iAnn i
-        (provItems, _)      = getProvenanceItemFromIdf idf prov
+        (provItems, _)      = getProvenanceItem idf prov
         apply [provItem]    = 
             let conv
                     | (MtConversionPushUp `elem` o) && (not (converted(provItem))) =
@@ -79,9 +96,10 @@ rewriteUpperMostScalarExpr _ _ e    = e
 -- for the moment, implementation focuses on TPC-H Q22
 consolidateSelectItems :: Pa.SelectItemList -> Provenance -> (Provenance, Pa.SelectItemList)
 consolidateSelectItems (Pa.SelExp ann (Pa.Identifier i a): items) prov =
+    -- as we only check for identifiers, we know that we deal with items that are not converted yet
     let (p, newItems)           = consolidateSelectItems items prov
         item                    = Pa.Identifier i a
-        (provItems, attName)    = getProvenanceItemFromIdf item prov
+        (provItems, attName)    = getProvenanceItem item p
         consolidate [provItem]  =
             let tenantFieldName = getIntermediateTenantIdentifier item
                 newTenantField  = Pa.SelectItem ann (tenantField(provItem)) (Pa.Nmc tenantFieldName)
@@ -93,6 +111,13 @@ consolidateSelectItems (Pa.SelExp ann (Pa.Identifier i a): items) prov =
             in  (newProv, (Pa.SelExp ann item:newTenantField:newItems))
         consolidate _           = (p, Pa.SelExp ann item :newItems)        -- default case where item is not special in any regard
     in consolidate provItems
+consolidateSelectItems (Pa.SelectItem ann e (Pa.Nmc n): items) prov =
+    -- for the examples we look at, we know e is in universal format --> only add provenance for its new name
+    let (p, newItems)           = consolidateSelectItems items prov
+        (provItems, _)          = getProvenanceItem e p
+        consolidate [provItem]  = (addToProvenance n provItem p)
+        consolidate _           = p
+    in (consolidate provItems, Pa.SelectItem ann e (Pa.Nmc n):newItems)
 consolidateSelectItems (item:items) prov =
     let (p, newItems)   = consolidateSelectItems items prov
     in  (p, item:newItems)
