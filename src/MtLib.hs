@@ -125,7 +125,7 @@ rewriteQuery spec setting p0 (Pa.Select ann selDistinct selSelectList selTref se
         (p4,newSelectList) <- rewriteSelectList spec setting p3 selSelectList selTref rewriteQuery (null trefs)
         let newGroupBy      = rewriteGroupByClause spec selTref selGroupBy
         let newOrderBy      = rewriteOrderByClause spec selTref selOrderBy
-        Right $ (p4, Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
+        Right (p4, Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
             newGroupBy
             newHaving
             newOrderBy
@@ -141,24 +141,24 @@ rewriteTrefList :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.TableRefList ->
 rewriteTrefList spec setting p0 (Pa.SubTref ann sel:trefs) allTrefs = do
     (p1,h) <- rewriteQuery spec setting p0 sel allTrefs
     (p2,t) <- rewriteTrefList spec setting p1 trefs allTrefs
-    Right $ (p2, Pa.SubTref ann h : t)
+    Right (p2, Pa.SubTref ann h : t)
 rewriteTrefList spec setting p0 (Pa.TableAlias ann tb tref:trefs) allTrefs = do
     (p1,h) <- rewriteTrefList spec setting p0 [tref] allTrefs
     (p2,t) <- rewriteTrefList spec setting p1 trefs allTrefs
-    Right $ (p2, Pa.TableAlias ann tb (head h) : t)
+    Right (p2, Pa.TableAlias ann tb (head h) : t)
 rewriteTrefList spec setting p0 (Pa.JoinTref ann tref0 n t h tref1 (Just (Pa.JoinOn a expr)):trefs) allTrefs = do
     (p1,l) <- rewriteTrefList spec setting p0 [tref0] allTrefs
     (p2,r) <- rewriteTrefList spec setting p1 [tref1] allTrefs
     (p3,Just filtered) <- rewriteWhereClause spec setting p2 (Just expr) [tref0, tref1] allTrefs rewriteQuery
     (p4,rest) <- rewriteTrefList spec setting p3 trefs allTrefs
-    Right $ (p4, Pa.JoinTref ann (head l) n t h (head r) (Just (Pa.JoinOn a filtered)) : rest)
+    Right (p4, Pa.JoinTref ann (head l) n t h (head r) (Just (Pa.JoinOn a filtered)) : rest)
 rewriteTrefList spec setting p0 (Pa.FullAlias ann tb cols tref:trefs) allTrefs = do
     (p1,h) <- rewriteTrefList spec setting p0 [tref] allTrefs
     (p2,l) <- rewriteTrefList spec setting p1 trefs allTrefs
-    Right $ (p2, Pa.FullAlias ann tb cols (head h) : l)
+    Right (p2, Pa.FullAlias ann tb cols (head h) : l)
 rewriteTrefList spec setting p0 (Pa.Tref ann tbl:trefs) allTrefs = do
     (p1,t) <- rewriteTrefList spec setting p0 trefs allTrefs
-    Right $ (p1, Pa.Tref ann tbl : t)
+    Right (p1, Pa.Tref ann tbl : t)
 rewriteTrefList _ _ _ (tref:_) _ =  Left $ FromMtRewriteError $ "Rewrite function not yet implemented for table-ref " ++ show tref
 rewriteTrefList _ _ prov [] _ = Right (prov, [])
 
