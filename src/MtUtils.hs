@@ -25,7 +25,7 @@ module MtUtils
     ,ConversionFunctionsTriple
     ,getConversionFunctions
     ,isComparisonOp
---    ,isConstExpr
+    ,isSqlAggOp
     ,printName
     ,containsString
     ,removeDuplicates
@@ -38,6 +38,7 @@ import qualified Database.HsSqlPpp.Annotation as A
 import qualified Data.Map as M
 import qualified Data.MultiMap as MM
 -- import qualified Data.Set as S --> already imported somewhere else
+import qualified Data.Text as T
 
 -- error handling
 data MtRewriteError = FromParseError Pa.ParseErrorExtra | FromMtRewriteError String
@@ -213,35 +214,8 @@ isComparisonOp (Pa.BinaryOp _ (Pa.Name _ [Pa.Nmc opName]) _ _) = opName `elem` [
 isComparisonOp (Pa.InPredicate _ _ _ (Pa.InList _ _)) = True
 isComparisonOp _ = False
 
----- anything that does not include a convertible attribute is supposed to be constant -> subqueries are not supposed constant...
---isConstExpr :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> Bool
---isConstExpr _ _ (Pa.StringLit _ _)      = True
---isConstExpr _ _ (Pa.NumberLit _ _)      = True
---isConstExpr s t (Pa.Parens _ expr)      = isConstExpr s t expr
---isConstExpr s t (Pa.App _ _ exprs)      = foldl1 (&&) (map (isConstExpr s t) exprs)
---isConstExpr s t (Pa.InPredicate _ exp _ (Pa.InList _ exprs)) = foldl (&&) (isConstExpr s t exp) (map (isConstExpr s t ) exprs)
---isConstExpr s t (Pa.Identifier _ i)     =
---    let convFun         = getConversionFunctions s t i
---        result Nothing  = True
---        result _        = False
---    in result convFun
---isConstExpr _ _ _                       = False
---
----- returns (recursively) all conversion functions involved in a scalar expression (without sub-queries)
---getInvolvedConversionFunctions :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExpr -> S.Set (MtFromUniversalFunc, MtToUniversalFunc)
---getInvolvedConversionFunctions s t (Pa.PrefixOp _ _ expr)  = getInvolvedConversionFunctions st expr
---getInvolvedConversionFunctions s t (Pa.PostfixOp _ _ expr) = getInvolvedConversionFunctions st expr
---getInvolvedConversionFunctions s t (Pa.BinaryOp _ _ e1 e2) = S.union (getInvolvedConversionFunctions st e1) (getInvolvedConversionFunctions st e2)
---getInvolvedConversionFunctions s t (Pa.SpecialOp _ _ exprs) = S.fromList (map (getInvolvedConversionFunctions s t) exprs)
---getInvolvedConversionFunctions s t (Pa.App _ _ exprs)      = S.fromList (map (getInvolvedConversionFunctions s t) exprs)
---getInvolvedConversionFunctions s t (Pa.Parens _ expr)      = getInvolvedConversionFunctions s t expr
---getInvolvedConversionFunctions s t (Pa.InPredicate _ _ _ (Pa.InList _ exprs)) = S.fromList (map (getInvolvedConversionFunctions s t) exprs)
---getInvolvedConversionFunctions s t (Pa.Identifier _ i)     =
---    let convFun                     = getConversionFunctions s t i
---        result (Just (to, from, _)  = (to, from)
---        result _                    = S.empty
---    in result convFun
---getInvolvedConversionFunctions _ _ _                       = S.empty
+isSqlAggOp :: Pa.Name -> Bool
+isSqlAggOp (Pa.Name _ [Pa.Nmc n]) = (T.toLower (T.pack n)) `elem` ["sum", "count", "avg", "min", "max"]
 
 printName :: Pa.Name -> String
 printName (Pa.Name _ (Pa.Nmc name:names)) = foldl (\w (Pa.Nmc n) -> w ++ "." ++ n) name names

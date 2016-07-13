@@ -20,6 +20,7 @@ library
                      , MtAnnotate
                      , MtRewriteSelect
                      , MtRewriteWhere
+                     , MtOptimizer
   build-depends:       base >= 4.7 && < 5
                      , hssqlppp
                      , text

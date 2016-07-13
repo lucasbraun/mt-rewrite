@@ -166,6 +166,7 @@ getOptimizations s =
         f "p"   = MtClientPresentationPushUp
         f "c"   = MtConversionPushUp
         f "d"   = MtConversionDistribution
+        f "i"   = MtFunctionInlining
         f _     = MtUnknownOptimization
     in mtOptimizationsFromList $ map f ws
 
@@ -203,7 +204,7 @@ mainLoop spec = do
                 let dialect = getDialect line3
                 putStrLn "Please enter a number of optimization passes as characters, separated by spaces. Options include:"
                 putStrLn ("'t' (trivial optimizations), 'p' (client presentation push-up),"
-                    ++ "'c' (client conversion push-up), 'd' (conversion distribution)")
+                    ++ "'c' (client conversion push-up), 'd' (conversion distribution), 'i' (function inlining)")
                 line4 <- getLine
                 let o = getOptimizations line4
                 putStrLn "###############################################"

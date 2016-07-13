@@ -40,6 +40,7 @@ import MtUtils
 import MtAnnotate
 import MtRewriteWhere
 import MtRewriteSelect
+import MtOptimizer
 
 -- ##################################
 -- Parsing and Printing
@@ -60,6 +61,7 @@ mtParse query dialect = toMtRewriteResult $ Pa.parseStatements
 
 mtPrettyPrint :: MtRewriteResult -> D.Dialect -> String
 mtPrettyPrint (Left err) _ = show err
+-- mtPrettyPrint (Right statement) dialect = show statement -- DEBUG
 mtPrettyPrint (Right statement) dialect = L.unpack $ Pr.prettyStatements (Pr.PrettyFlags dialect) [statement]
 
 mtCompactPrint :: MtRewriteResult -> D.Dialect -> String
@@ -106,10 +108,12 @@ rewriteStatement spec setting (Pa.QueryStatement a q) = do
     -- (p, rewrittenQuery) <- rewriteQuery spec setting emptyProvenance q []   -- DEBUG
     -- Left $ FromMtRewriteError $ show (MM.toMap p)                           -- DEBUG
     (_, rewrittenQuery) <- rewriteQuery spec setting emptyProvenance q []
-    Right $ Pa.QueryStatement a rewrittenQuery
+    let optimizedQuery   =  mtOptimize setting rewrittenQuery
+    Right $ Pa.QueryStatement a optimizedQuery
 rewriteStatement spec setting (Pa.CreateView a n c q) = do
     (_, rewrittenQuery) <- rewriteQuery spec setting emptyProvenance q []
-    Right $ Pa.CreateView a n c rewrittenQuery
+    let optimizedQuery   =  mtOptimize setting rewrittenQuery
+    Right $ Pa.CreateView a n c optimizedQuery
 rewriteStatement _ _ (Pa.Set ann s vals) = Right $ Pa.Set ann s vals
 rewriteStatement _ _ (Pa.DropSomething a d i n c) = Right $ Pa.DropSomething a d i n c
 rewriteStatement _ _ statement = Left $ FromMtRewriteError $ "Rewrite function not yet implementd for statement " ++ show statement
@@ -192,21 +196,4 @@ rewriteGroupByClause spec trefs = map (omitIfNecessary spec trefs) . (\l -> remo
 rewriteOrderByClause :: MtSchemaSpec -> Pa.TableRefList -> Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
 rewriteOrderByClause spec trefs ((expr, dir, no):list) = (omitIfNecessary spec trefs expr, dir, no) : rewriteOrderByClause spec trefs list
 rewriteOrderByClause _ _ [] = []
-
--- ##################################
--- MT Optimizer
--- ##################################
---
--- Some preliminary ideas for optimizer steps
--- Observations:
---      - some optimizations should happen in conjunction with rewrite (i) (iv)
---      - some optimizations need conversion provenance (iv) to (vi)
---
--- (i)      D=C optimization ==> only filter at the bottom level, rest of the query looks the same, no conversion needed
--- (ii)     |D| = 1: similar to i), but additionally requires a final presentation to client view at the uppermost select
--- (iii)    Client Presentation push-up: push-up conversion to client format to the uppermost select
---          --> comparisons are always done in universal format, constants need to be brought into universal format as well
--- (iv)     Conversion push-up: do comparisons in owner's format --> needs to convert constant twice --> only convert on joins or aggregations
--- (v)      Aggregation distribution: if possible, compute partial aggregations on different client formats and then only transfrom these partial results
--- (vi)     Statistical aggregation optimization: if (v) not possible: figure out in (intermediary) formats to convert values (essentially equivalent to join ordering and site selection in distributed query processing
 

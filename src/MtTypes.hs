@@ -47,7 +47,7 @@ data MtOptimization             =     MtTrivialOptimization         -- if |C|=1,
                                     | MtFunctionInlining            -- inlining conversion functions istead of calling them
                                     | MtUnknownOptimization         -- dummy value to map whenever an unknown optimization was chosen
                                     deriving (Eq,Ord,Show)
--- there are more comments about optimizations in MtLib.hs...
+-- there are more comments about optimizations in MtOptimizer.hs...
 type MtOptimizationSet          = S.Set MtOptimization
 
 type MtSetting                  = (MtClient, MtDataSet, S.Set MtOptimization)
