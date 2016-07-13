@@ -9,6 +9,7 @@ module MtUtils
     ,replaceProvenanceItem
     ,flattenProvenance
     ,pruneProvenance
+    ,keepRecommendations
     ,emptyProvenance
     ,RewriteQueryFun
     ,CasesType
@@ -111,6 +112,20 @@ pruneProvenance prov =
                 sc  = shouldConvert(p)
                 pin False True  = prune ps
                 pin _ _         = (k,p):(prune ps)
+            in pin c sc
+        prune []    = []
+    in  MM.fromList (prune pList)
+
+-- only keeps the hints and prunes the rest (used in scalar sub queries)
+-- basically the invert of pruneProvenance
+keepRecommendations :: Provenance -> Provenance
+keepRecommendations prov =
+    let pList = MM.toList prov
+        prune ((k,p):ps)= 
+            let c   = converted(p)
+                sc  = shouldConvert(p)
+                pin False True  = (k,p):(prune ps)
+                pin _ _         = prune ps
             in pin c sc
         prune []    = []
     in  MM.fromList (prune pList)

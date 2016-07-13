@@ -250,10 +250,10 @@ rewriteScalarExpr spec setting p0 (Pa.InPredicate ann expr i list) trefs rFun _ 
     Right $ (p2, Pa.InPredicate ann h i l)
 rewriteScalarExpr spec setting p0 (Pa.Exists ann sel) trefs rFun _ = do
     (p1,h) <- rFun spec setting p0 sel trefs
-    Right $ (p1, Pa.Exists ann h)
+    Right $ (keepRecommendations p1, Pa.Exists ann h)
 rewriteScalarExpr spec setting p0 (Pa.ScalarSubQuery ann sel) trefs rFun _ = do
     (p1,h) <- rFun spec setting p0 sel trefs
-    Right $ (p1,Pa.ScalarSubQuery ann h)
+    Right $ (keepRecommendations p1,Pa.ScalarSubQuery ann h)
 rewriteScalarExpr spec setting p0 (Pa.Case ann cases els) trefs rFun _ = do
     (p1,c) <- rewriteCases spec setting p0 cases trefs rFun
     (p2,e) <- rewriteMaybeScalarExpr spec setting p1 els trefs rFun
