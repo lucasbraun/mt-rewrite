@@ -74,6 +74,11 @@ convertComparisonOp spec (c,_,_) p0 (Pa.BinaryOp ann opName (Pa.Identifier a0 i)
 convertComparisonOp spec (c,_,_) p0 (Pa.BinaryOp ann opName (Pa.StringLit a1 s) (Pa.Identifier a0 i)) trefs _ =
     let triple  = getConversionFunctions spec trefs i
     in Right $ (p0, Pa.BinaryOp ann opName (convertLit triple trefs c (Pa.StringLit a1 s)) (Pa.Identifier a0 i))
+convertComparisonOp spec setting p0 (Pa.BinaryOp ann opName (Pa.Identifier a0 i) (Pa.ScalarSubQuery a1 expr)) trefs rFun = do
+    -- as the result is a scalar value, we know it IS in universal format. So we can convert it to the tenant format
+    let triple  = getConversionFunctions spec trefs i
+    (p1,e)     <- convertScalarExpr spec setting p0 (Pa.ScalarSubQuery a1 expr) trefs rFun
+    Right $ (p1, Pa.BinaryOp ann opName (Pa.Identifier a0 i) (convertLit triple trefs 0 e))
 convertComparisonOp spec (c,_,_) p0 (Pa.InPredicate ann (Pa.Identifier a0 i0) i (Pa.InList a1 exprs)) trefs _ =
     let triple  = getConversionFunctions spec trefs i0
     in Right $ (p0, Pa.InPredicate ann (Pa.Identifier a0 i0) i (Pa.InList a1 (map (convertLit triple trefs c) exprs)))
@@ -88,6 +93,7 @@ convertComparisonOp spec setting p0 (Pa.InPredicate ann expr i list) trefs rFun 
      Right $ (p2, Pa.InPredicate ann h i l)
 
 -- at this point we know we have to bring the literal into the form given by the conversion function triple
+-- it also works for scalar sub queries (whose result is similar to a literal, but in universal format)
 convertLit ::  Maybe ConversionFunctionsTriple -> Pa.TableRefList -> MtClient -> Pa.ScalarExpr -> Pa.ScalarExpr
 convertLit (Just (to, from, (Just tName, _))) trefs c (Pa.NumberLit a s) =
     let (Just oldTName) = getOldTableName (Just tName) trefs
@@ -97,6 +103,9 @@ convertLit (Just (to, from, (Just tName, _))) trefs c (Pa.StringLit a s) =
     let (Just oldTName) = getOldTableName (Just tName) trefs
     in  createConvFunctionApplication from (
         createConvFunctionApplication to (Pa.StringLit a s) (Pa.NumberLit A.emptyAnnotation (show c))) (getTenantIdentifier tName oldTName)
+convertLit (Just (_, from, (Just tName, _))) trefs _ (Pa.ScalarSubQuery a e) =
+    let (Just oldTName) = getOldTableName (Just tName) trefs
+    in  createConvFunctionApplication from (Pa.ScalarSubQuery a e) (getTenantIdentifier tName oldTName)
 convertLit _ _ _ l = l
 
 -- at this point, we certainly convert the identifier no matter what
