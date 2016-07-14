@@ -16,7 +16,7 @@ module MtUtils
     ,TableAttributePair
     ,getTenantAttributeName
     ,getTenantIdentifier
-    ,getIntermediateTenantIdentifier
+    ,getIntermediateIdentifier
     ,isGlobalTable
     ,getOldTableName
     ,getTableAndAttName
@@ -24,8 +24,15 @@ module MtUtils
     ,createConvFunctionApplication
     ,ConversionFunctionsTriple
     ,getConversionFunctions
+    ,reduceIdentifiers
+    ,reduceOrderBy
+    ,removeDuplicateSelectItems
+    ,getAppName
     ,isComparisonOp
     ,isSqlAggOp
+    ,isAvg
+    ,isCnt
+    ,getOutAggFromInnerAgg
     ,printName
     ,containsString
     ,removeDuplicates
@@ -146,8 +153,8 @@ getTenantIdentifier :: String -> MtTableName -> Pa.ScalarExpr
 getTenantIdentifier tName mtName = Pa.Identifier A.emptyAnnotation $ Pa.Name A.emptyAnnotation [Pa.Nmc tName, Pa.Nmc $ getTenantAttributeName mtName]
 
 -- creates a unique, reasonable name for intermediate tenant keys
-getIntermediateTenantIdentifier :: Pa.ScalarExpr -> String
-getIntermediateTenantIdentifier (Pa.Identifier _ (Pa.Name _ nameComps)) =
+getIntermediateIdentifier :: Pa.ScalarExpr -> String
+getIntermediateIdentifier (Pa.Identifier _ (Pa.Name _ nameComps)) =
     foldl (\s1 (Pa.Nmc s2) -> (s1 ++ "_" ++ s2)) "tk_" nameComps
 
 -- checks whether a table is global. Assumes anything not in the schema spec is also global
@@ -209,13 +216,53 @@ getConversionFunctions s t i  =
         result _                                = Nothing
     in result comparability
 
+reduceIdentifiers :: [Pa.ScalarExpr] -> [Pa.ScalarExpr]
+reduceIdentifiers (Pa.Identifier a (Pa.Name nAnn nameComps) : others) =
+    (Pa.Identifier a (Pa.Name nAnn [last nameComps])) : reduceIdentifiers others
+reduceIdentifiers [] = []
+
+reduceOrderBy :: Pa.ScalarExprDirectionPairList -> Pa.ScalarExprDirectionPairList
+reduceOrderBy ((e,d,n):items) = (head (reduceIdentifiers [e]), d,n) : reduceOrderBy items
+reduceOrderBy [] = []
+
+remover :: ([Pa.SelectItem], [String]) -> ([Pa.SelectItem], [String])
+remover (Pa.SelExp a e: items, ss) =
+    let (x,y) = remover (items,ss)
+    in  (Pa.SelExp a e:x, y)
+remover (Pa.SelectItem a e (Pa.Nmc n): items, ss)
+    | n `elem` ss   = remover (items,ss)
+    | otherwise     = 
+        let (x,y) = remover (items, n:ss)
+        in  (Pa.SelectItem a e (Pa.Nmc n):x, y)
+remover ([],ss) = ([],ss)
+
+removeDuplicateSelectItems :: [Pa.SelectItem] -> [Pa.SelectItem]
+removeDuplicateSelectItems selItems =
+    let (result, _)    = remover (selItems, [])
+    in result
+
+-- only works for names with exactly one name element
+getAppName :: Pa.Name -> String
+getAppName (Pa.Name _ [Pa.Nmc n]) = n
+getAppName _ = ""
+
 isComparisonOp :: Pa.ScalarExpr -> Bool
 isComparisonOp (Pa.BinaryOp _ (Pa.Name _ [Pa.Nmc opName]) _ _) = opName `elem` ["=", "<>", "<", ">", ">=", "<="]
 isComparisonOp (Pa.InPredicate _ _ _ (Pa.InList _ _)) = True
 isComparisonOp _ = False
 
-isSqlAggOp :: Pa.Name -> Bool
-isSqlAggOp (Pa.Name _ [Pa.Nmc n]) = (T.toLower (T.pack n)) `elem` ["sum", "count", "avg", "min", "max"]
+isSqlAggOp :: String -> Bool
+isSqlAggOp n = (T.toLower (T.pack n)) `elem` ["sum", "count", "avg", "min", "max"]
+
+isAvg :: String -> Bool
+isAvg n = (T.toLower (T.pack n)) == "avg"
+
+isCnt :: String -> Bool
+isCnt n = (T.toLower (T.pack n)) == "count"
+
+getOutAggFromInnerAgg :: String -> String
+getOutAggFromInnerAgg "count"   = "sum"
+getOutAggFromInnerAgg s         = s
 
 printName :: Pa.Name -> String
 printName (Pa.Name _ (Pa.Nmc name:names)) = foldl (\w (Pa.Nmc n) -> w ++ "." ++ n) name names

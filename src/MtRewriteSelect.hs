@@ -101,7 +101,7 @@ consolidateSelectItems (Pa.SelExp ann (Pa.Identifier i a): items) prov =
         item                    = Pa.Identifier i a
         (provItems, attName)    = getProvenanceItem item p
         consolidate [provItem]  =
-            let tenantFieldName = getIntermediateTenantIdentifier item
+            let tenantFieldName = getIntermediateIdentifier item
                 newTenantField  = Pa.SelectItem ann (tenantField provItem) (Pa.Nmc tenantFieldName)
                 newProvItem     = ProvenanceItem {fieldName=fieldName provItem, toUniversal=toUniversal provItem,
                     fromUniversal=fromUniversal provItem,
