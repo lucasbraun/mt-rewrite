@@ -101,7 +101,7 @@ consolidateSelectItems (Pa.SelExp ann (Pa.Identifier i a): items) prov =
         item                    = Pa.Identifier i a
         (provItems, attName)    = getProvenanceItem item p
         consolidate [provItem]  =
-            let tenantFieldName = getIntermediateIdentifier item
+            let tenantFieldName = "tk_" ++ getIntermediateIdentifier item
                 newTenantField  = Pa.SelectItem ann (tenantField provItem) (Pa.Nmc tenantFieldName)
                 newProvItem     = ProvenanceItem {fieldName=fieldName provItem, toUniversal=toUniversal provItem,
                     fromUniversal=fromUniversal provItem,
@@ -111,6 +111,17 @@ consolidateSelectItems (Pa.SelExp ann (Pa.Identifier i a): items) prov =
             in  (newProv, Pa.SelExp ann item:newTenantField:newItems)
         consolidate _           = (p, Pa.SelExp ann item :newItems)        -- default case where item is not special in any regard
     in consolidate provItems
+consolidateSelectItems (Pa.SelectItem ann (Pa.BinaryOp a0 opName (Pa.Identifier i a) exp) (Pa.Nmc n):items) prov =
+    -- re-use the consolidateSelectItems of Identifier... we know that right part is constant in tpch (Q7/Q8)
+    let (p, (Pa.SelExp _ item:others))  = consolidateSelectItems (Pa.SelExp ann (Pa.Identifier i a):items) prov
+        (provItems, _)                  = getProvenanceItem (Pa.Identifier i a) p
+        consolidate [provItem]  = addToProvenance n provItem p
+        consolidate _           = p
+    in  (consolidate provItems, Pa.SelectItem ann (Pa.BinaryOp a0 opName item exp) (Pa.Nmc n):others)
+consolidateSelectItems (Pa.SelectItem ann (Pa.BinaryOp a0 opName left right) (Pa.Nmc n):items) prov =
+    -- re-use the consolidateSelectItems of simple binary op... we know that right part is constant in tpch (Q9)
+    let (p, (Pa.SelectItem _ item _:others))   = consolidateSelectItems (Pa.SelectItem ann left (Pa.Nmc n):items) prov
+    in  (p, Pa.SelectItem ann (Pa.BinaryOp a0 opName item right) (Pa.Nmc n):others)
 consolidateSelectItems (Pa.SelectItem ann e (Pa.Nmc n): items) prov =
     -- for the examples we look at, we know e is in universal format --> only add provenance for its new name
     let (p, newItems)           = consolidateSelectItems items prov
@@ -225,6 +236,7 @@ rewriteIdentifier _ _ prov idf _ _ = Right (prov, idf)
 
 -- the boolean in the end tells whether a conversion has to happen (because the scalar expr is part of a more complex
 -- expression). Otherwise, we may defer conversion to later
+-- TODO: for now, lower restrictions a little bit because we know that the binary ops we have do not create a problem (Q07,Q08,Q09)
 rewriteScalarExpr :: MtSchemaSpec -> MtSetting -> Provenance -> Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun -> Bool
         -> Either MtRewriteError (Provenance, Pa.ScalarExpr)
 rewriteScalarExpr spec setting p0 (Pa.PrefixOp ann opName arg) trefs rFun _ = do
@@ -233,9 +245,9 @@ rewriteScalarExpr spec setting p0 (Pa.PrefixOp ann opName arg) trefs rFun _ = do
 rewriteScalarExpr spec setting p0 (Pa.PostfixOp ann opName arg) trefs rFun _ = do
     (p1,h) <- rewriteScalarExpr spec setting p0 arg trefs rFun True
     Right (p1, Pa.PostfixOp ann opName h)
-rewriteScalarExpr spec setting p0 (Pa.BinaryOp ann opName arg0 arg1) trefs rFun _ = do
-    (p1,b1) <- rewriteScalarExpr spec setting p0 arg0 trefs rFun True
-    (p2,b2) <- rewriteScalarExpr spec setting p1 arg1 trefs rFun True
+rewriteScalarExpr spec setting p0 (Pa.BinaryOp ann opName arg0 arg1) trefs rFun b = do
+    (p1,b1) <- rewriteScalarExpr spec setting p0 arg0 trefs rFun b
+    (p2,b2) <- rewriteScalarExpr spec setting p1 arg1 trefs rFun b
     Right (p2, Pa.BinaryOp ann opName b1 b2)
 rewriteScalarExpr spec setting p0 (Pa.SpecialOp ann opName args) trefs rFun _ = do
     (p1,l) <- rewriteScalarExprList spec setting p0 args trefs rFun
