@@ -261,6 +261,7 @@ isCnt :: String -> Bool
 isCnt n = (T.toLower (T.pack n)) == "count"
 
 getOutAggFromInnerAgg :: String -> String
+getOutAggFromInnerAgg "COUNT"   = "SUM"
 getOutAggFromInnerAgg "count"   = "sum"
 getOutAggFromInnerAgg s         = s
 
