@@ -108,12 +108,10 @@ rewriteStatement spec setting (Pa.QueryStatement a q) = do
     -- (p, rewrittenQuery) <- rewriteQuery spec setting emptyProvenance q []   -- DEBUG
     -- Left $ FromMtRewriteError $ show (MM.toMap p)                           -- DEBUG
     (_, rewrittenQuery) <- rewriteQuery spec setting emptyProvenance q []
-    let optimizedQuery   =  mtOptimize setting rewrittenQuery
-    Right $ Pa.QueryStatement a optimizedQuery
+    Right $ Pa.QueryStatement a rewrittenQuery
 rewriteStatement spec setting (Pa.CreateView a n c q) = do
     (_, rewrittenQuery) <- rewriteQuery spec setting emptyProvenance q []
-    let optimizedQuery   =  mtOptimize setting rewrittenQuery
-    Right $ Pa.CreateView a n c optimizedQuery
+    Right $ Pa.CreateView a n c rewrittenQuery
 rewriteStatement _ _ (Pa.Set ann s vals) = Right $ Pa.Set ann s vals
 rewriteStatement _ _ (Pa.DropSomething a d i n c) = Right $ Pa.DropSomething a d i n c
 rewriteStatement _ _ statement = Left $ FromMtRewriteError $ "Rewrite function not yet implementd for statement " ++ show statement
@@ -129,11 +127,9 @@ rewriteQuery spec setting p0 (Pa.Select ann selDistinct selSelectList selTref se
         (p4,newSelectList) <- rewriteSelectList spec setting p3 selSelectList selTref rewriteQuery (null trefs)
         let newGroupBy      = rewriteGroupByClause spec selTref selGroupBy
         let newOrderBy      = rewriteOrderByClause spec selTref selOrderBy
-        Right (p4, Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
-            newGroupBy
-            newHaving
-            newOrderBy
-            selLimit selOffset selOption)
+        Right (p4, mtOptimize setting (
+            Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
+            newGroupBy newHaving newOrderBy selLimit selOffset selOption))
 rewriteQuery _ _ _ query _ = Left $ FromMtRewriteError $ "Rewrite function not yet implemented for query expression " ++ show query
 
 -- ## REWRITE FUNCTIONS ##

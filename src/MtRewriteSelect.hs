@@ -158,13 +158,13 @@ renameSelExp (Pa.SelExp ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc from])
                     [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])
                         [Pa.Identifier a4 i, arg0]
                     ,Pa.NumberLit a5 arg1])
-renameSelExp (Pa.SelExp ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [Pa.Identifier a2 i, arg0]))
-            | containsString to "ToUniversal" = 
+renameSelExp (Pa.SelExp ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc fromTo]) [Pa.Identifier a2 i, arg0]))
+            | containsString fromTo "ToUniversal" || containsString fromTo "FromUniversal" = 
                 let (_ , Just attName) = getTableAndAttName i
-                in  Pa.SelectItem ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc to])
+                in  Pa.SelectItem ann (Pa.App a0 (Pa.Name a1 [Pa.Nmc fromTo])
                     [Pa.Identifier a2 i, arg0]) (Pa.Nmc attName)
             | otherwise = Pa.SelExp ann (
-                Pa.App a0 (Pa.Name a1 [Pa.Nmc to]) [Pa.Identifier a2 i, arg0])
+                Pa.App a0 (Pa.Name a1 [Pa.Nmc fromTo]) [Pa.Identifier a2 i, arg0])
 renameSelExp expr = expr
 
 rewriteMaybeScalarExpr :: MtSchemaSpec -> MtSetting -> Provenance -> Maybe Pa.ScalarExpr -> Pa.TableRefList -> RewriteQueryFun

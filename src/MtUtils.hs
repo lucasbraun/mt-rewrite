@@ -152,10 +152,23 @@ getTenantAttributeName s = s ++ "_tenant_key"
 getTenantIdentifier :: String -> MtTableName -> Pa.ScalarExpr
 getTenantIdentifier tName mtName = Pa.Identifier A.emptyAnnotation $ Pa.Name A.emptyAnnotation [Pa.Nmc tName, Pa.Nmc $ getTenantAttributeName mtName]
 
+opNameToString :: String -> String
+opNameToString "/"  = "div"
+opNameToString "*"  = "mul"
+opNameToString "+"  = "add"
+opNameToString "-"  = "sub"
+opNameToString s    = s
+
 -- creates a unique, reasonable name for intermediate tenant keys
 getIntermediateIdentifier :: Pa.ScalarExpr -> String
 getIntermediateIdentifier (Pa.Identifier _ (Pa.Name _ nameComps)) =
-    foldl (\s1 (Pa.Nmc s2) -> (s1 ++ "_" ++ s2)) "tk_" nameComps
+    foldl (\s1 (Pa.Nmc s2) -> (s1 ++ "_" ++ s2)) "" nameComps
+getIntermediateIdentifier (Pa.Star _)           = "all"
+getIntermediateIdentifier (Pa.BinaryOp _ (Pa.Name _ [Pa.Nmc opName]) e1 e2) =
+    (getIntermediateIdentifier e1)  ++ "_" ++ (opNameToString opName) ++ "_" ++ (getIntermediateIdentifier e2)
+getIntermediateIdentifier (Pa.NumberLit _ s)    = s
+getIntermediateIdentifier (Pa.Parens _ e)       = "p_" ++ (getIntermediateIdentifier e) ++ "_p"
+getIntermediateIdentifier _                     = "unexpected_scalar_ex"
 
 -- checks whether a table is global. Assumes anything not in the schema spec is also global
 isGlobalTable :: MtSchemaSpec -> Maybe MtTableName -> Bool
