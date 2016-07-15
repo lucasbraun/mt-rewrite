@@ -86,6 +86,7 @@ extendInnerSelect sl []             = sl
 -- and 0 or 1 expressions to be added to the group-by clause of the inner relation
 -- the group-by clause of the outer relation equals the current group-by
 -- TODO: this function is really non-exhaustive! needs to be adpated for different queries than tpch
+-- TODO: there is a lot of copy-pasted, slightly modified, code. Check for simplifications...
 applyCDWithSplit :: Pa.SelectItem -> (Pa.SelectItem, [Pa.SelectItem], [Pa.ScalarExpr])
 applyCDWithSplit (Pa.SelectItem iAnn (Pa.App ann (Pa.Name nAnn [Pa.Nmc appName]) [
         (Pa.App a0 (Pa.Name a1 [Pa.Nmc from]) [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])[att, ttid], cid])])
@@ -130,6 +131,17 @@ applyCDWithSplit (Pa.SelectItem iAnn (Pa.App ann (Pa.Name nAnn [Pa.Nmc appName])
         tmpName     = Pa.Name a0 [Pa.Nmc tmpString]
     in  (Pa.SelectItem iAnn (Pa.App a0 (Pa.Name a1 [Pa.Nmc from]) [
             Pa.App ann (Pa.Name nAnn [Pa.Nmc (getOutAggFromInnerAgg appName)]) [Pa.Identifier a0 tmpName], cid]) newName,
+        [Pa.SelectItem iAnn (Pa.App a2 (Pa.Name a3 [Pa.Nmc to]) [
+            Pa.App ann (Pa.Name nAnn [Pa.Nmc appName]) [Pa.BinaryOp bAnn binOpName att other],ttid]) (Pa.Nmc tmpString)],
+        [ttid])
+-- TODO: for now assumes that all binary ops are OK, which is of course not true in the general case
+applyCDWithSplit (Pa.SelExp iAnn (Pa.App ann (Pa.Name nAnn [Pa.Nmc appName]) [Pa.BinaryOp bAnn binOpName
+        (Pa.App a0 (Pa.Name a1 [Pa.Nmc from]) [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])[att, ttid], cid]) other])) =
+    -- TODO: for now just assume:    (containsString to "ToUniversal" && containsString from "FromUniversal" && appName == "SUM" && binOpName \in (/,*)
+    let tmpString   = "mt_" ++ (getIntermediateIdentifier (Pa.BinaryOp bAnn binOpName att other))
+        tmpName     = Pa.Name a0 [Pa.Nmc tmpString]
+    in  (Pa.SelExp iAnn (Pa.App a0 (Pa.Name a1 [Pa.Nmc from]) [
+            Pa.App ann (Pa.Name nAnn [Pa.Nmc (getOutAggFromInnerAgg appName)]) [Pa.Identifier a0 tmpName], cid]),
         [Pa.SelectItem iAnn (Pa.App a2 (Pa.Name a3 [Pa.Nmc to]) [
             Pa.App ann (Pa.Name nAnn [Pa.Nmc appName]) [Pa.BinaryOp bAnn binOpName att other],ttid]) (Pa.Nmc tmpString)],
         [ttid])
