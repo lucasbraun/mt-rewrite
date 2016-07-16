@@ -111,13 +111,13 @@ consolidateSelectItems (Pa.SelExp ann (Pa.Identifier i a): items) prov =
             in  (newProv, Pa.SelExp ann item:newTenantField:newItems)
         consolidate _           = (p, Pa.SelExp ann item :newItems)        -- default case where item is not special in any regard
     in consolidate provItems
-consolidateSelectItems (Pa.SelectItem ann (Pa.BinaryOp a0 opName (Pa.Identifier i a) exp) (Pa.Nmc n):items) prov =
+consolidateSelectItems (Pa.SelectItem ann (Pa.BinaryOp a0 opName (Pa.Identifier i a) ex) (Pa.Nmc n):items) prov =
     -- re-use the consolidateSelectItems of Identifier... we know that right part is constant in tpch (Q7/Q8)
     let (p, (Pa.SelExp _ item:others))  = consolidateSelectItems (Pa.SelExp ann (Pa.Identifier i a):items) prov
         (provItems, _)                  = getProvenanceItem (Pa.Identifier i a) p
         consolidate [provItem]  = addToProvenance n provItem p
         consolidate _           = p
-    in  (consolidate provItems, Pa.SelectItem ann (Pa.BinaryOp a0 opName item exp) (Pa.Nmc n):others)
+    in  (consolidate provItems, Pa.SelectItem ann (Pa.BinaryOp a0 opName item ex) (Pa.Nmc n):others)
 consolidateSelectItems (Pa.SelectItem ann (Pa.BinaryOp a0 opName left right) (Pa.Nmc n):items) prov =
     -- re-use the consolidateSelectItems of simple binary op... we know that right part is constant in tpch (Q9)
     let (p, (Pa.SelectItem _ item _:others))   = consolidateSelectItems (Pa.SelectItem ann left (Pa.Nmc n):items) prov

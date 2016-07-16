@@ -122,10 +122,15 @@ applyCDWithSplit (Pa.SelectItem iAnn (Pa.App ann (Pa.Name nAnn [Pa.Nmc appName])
                         (Pa.App a0 (Pa.Name a1 [Pa.Nmc from]) [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])[att, ttid], cid])])
                         newName],
                     [])
+applyCDWithSplit (Pa.SelectItem iAnn (Pa.App ann (Pa.Name nAnn [Pa.Nmc appName]) [
+        (Pa.App a0 (Pa.Name a1 [Pa.Nmc from]) [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])[att, ttid], cid])])
+        newName)
 -- TODO: for now assumes that all binary ops are OK, which is of course not true in the general case
+-- re-uses the above rewrite procedure, works for Q17
 applyCDWithSplit (Pa.SelectItem iAnn (Pa.App ann (Pa.Name nAnn [Pa.Nmc appName]) [Pa.BinaryOp bAnn binOpName
         (Pa.App a0 (Pa.Name a1 [Pa.Nmc from]) [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])[att, ttid], cid]) other])
         newName) =
+    -- TODO: for now assumes that all binary ops are OK, which is of course not true in the general case
     -- TODO: for now just assume:    (containsString to "ToUniversal" && containsString from "FromUniversal" && appName == "SUM" && binOpName \in (/,*)
     let tmpString   = "mt_" ++ (getIntermediateIdentifier (Pa.BinaryOp bAnn binOpName att other))
         tmpName     = Pa.Name a0 [Pa.Nmc tmpString]
@@ -134,9 +139,9 @@ applyCDWithSplit (Pa.SelectItem iAnn (Pa.App ann (Pa.Name nAnn [Pa.Nmc appName])
         [Pa.SelectItem iAnn (Pa.App a2 (Pa.Name a3 [Pa.Nmc to]) [
             Pa.App ann (Pa.Name nAnn [Pa.Nmc appName]) [Pa.BinaryOp bAnn binOpName att other],ttid]) (Pa.Nmc tmpString)],
         [ttid])
--- TODO: for now assumes that all binary ops are OK, which is of course not true in the general case
 applyCDWithSplit (Pa.SelExp iAnn (Pa.App ann (Pa.Name nAnn [Pa.Nmc appName]) [Pa.BinaryOp bAnn binOpName
         (Pa.App a0 (Pa.Name a1 [Pa.Nmc from]) [Pa.App a2 (Pa.Name a3 [Pa.Nmc to])[att, ttid], cid]) other])) =
+    -- TODO: for now assumes that all binary ops are OK, which is of course not true in the general case
     -- TODO: for now just assume:    (containsString to "ToUniversal" && containsString from "FromUniversal" && appName == "SUM" && binOpName \in (/,*)
     let tmpString   = "mt_" ++ (getIntermediateIdentifier (Pa.BinaryOp bAnn binOpName att other))
         tmpName     = Pa.Name a0 [Pa.Nmc tmpString]
@@ -218,7 +223,7 @@ needsSplit []   = False
 innerNeedsSplit :: Pa.ScalarExpr -> Bool
 innerNeedsSplit (Pa.App _ (Pa.Name _ [Pa.Nmc from]) [Pa.App _ (Pa.Name _ [Pa.Nmc to]) _ ,_]) =
         containsString to "ToUniversal" && containsString from "FromUniversal"
-innerNeedsSplit (Pa.BinaryOp _ _ e1 _) = innerNeedsSplit e1   -- TODO: this case is incomplete
+innerNeedsSplit (Pa.BinaryOp _ _ e1 _) = innerNeedsSplit e1   -- TODO: this case is incomplete (and helps Q01 and many others)
 innerNeedsSplit _ = False
 
 needsSplitScalarEx :: Pa.ScalarExpr -> Bool
@@ -226,6 +231,7 @@ needsSplitScalarEx (Pa.App _ (Pa.Name _ [Pa.Nmc attName]) [inner])
     | (isCnt attName) || not (isSqlAggOp attName)   = False
     | otherwise                                 = innerNeedsSplit inner
 -- TODO: add more cases here if needed
+needsSplitScalarEx (Pa.BinaryOp _ _ e1 _) = needsSplitScalarEx e1   -- TODO: this case is incomplete (and helps Q17)
 needsSplitScalarEx _ = False
 
 --
