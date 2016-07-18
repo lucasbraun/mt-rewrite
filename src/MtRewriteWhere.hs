@@ -103,6 +103,11 @@ convertLit (Just (to, from, (Just tName, _))) trefs c (Pa.StringLit a s) =
     let (Just oldTName) = getOldTableName (Just tName) trefs
     in  createConvFunctionApplication from (
         createConvFunctionApplication to (Pa.StringLit a s) (Pa.NumberLit A.emptyAnnotation (show c))) (getTenantIdentifier tName oldTName)
+convertLit (Just (_, from, (Just tName, _))) trefs _ (Pa.ScalarSubQuery a0 (Pa.Select a1 d (Pa.SelectList a2 [Pa.SelExp a3 ex]) t w g h o l off op)) =
+    -- if possible, move aggregate into the select
+    let (Just oldTName) = getOldTableName (Just tName) trefs
+        convExp = createConvFunctionApplication from ex (getTenantIdentifier tName oldTName)
+    in  (Pa.ScalarSubQuery a0 (Pa.Select a1 d (Pa.SelectList a2 [Pa.SelectItem a3 convExp (Pa.Nmc "tmp_aggr")]) t w g h o l off op))
 convertLit (Just (_, from, (Just tName, _))) trefs _ (Pa.ScalarSubQuery a e) =
     let (Just oldTName) = getOldTableName (Just tName) trefs
     in  createConvFunctionApplication from (Pa.ScalarSubQuery a e) (getTenantIdentifier tName oldTName)
