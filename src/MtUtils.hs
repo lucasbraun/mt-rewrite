@@ -3,6 +3,7 @@ module MtUtils
     MtRewriteError(..)
     ,ProvenanceItem(..)
     ,Provenance
+    ,emptyProvenance
     ,addToProvenance
     ,addIdentifierToProvenance
     ,getProvenanceItem
@@ -10,7 +11,13 @@ module MtUtils
     ,flattenProvenance
     ,pruneProvenance
     ,keepRecommendations
-    ,emptyProvenance
+    ,JoinProvenance
+    ,JoinProvenanceList
+    ,getTableNamePrefixFromJoinProvenance
+    ,getTenantAndDomainTableName
+    ,getDomainTableName
+    ,getDomainTablePrefix
+    ,pruneJoinProvenanceList
     ,RewriteQueryFun
     ,CasesType
     ,TableAttributePair
@@ -137,6 +144,32 @@ keepRecommendations prov =
             in pin c sc
         prune []    = []
     in  MM.fromList (prune pList)
+
+-- types and functions for JoinProvenance (used in function inlining)
+--
+type JoinProvenance = (String, Bool, Pa.ScalarExpr) -- "phone/currency", is fromUniversal, tenant identifier
+type JoinProvenanceList = [JoinProvenance] 
+
+getTableNamePrefixFromJoinProvenance :: JoinProvenance -> String
+getTableNamePrefixFromJoinProvenance (s, b, e) = "Tmp_" ++ s ++ (if b then "from" else "to") ++ (getIntermediateIdentifier e)
+
+getTenantAndDomainTableName :: JoinProvenance -> (String, String)
+getTenantAndDomainTableName jp =
+    let tableNamePrefix = getTableNamePrefixFromJoinProvenance jp
+    in  (tableNamePrefix ++ "_tnt", tableNamePrefix ++ "_dom")
+
+getDomainTableName :: JoinProvenance -> String
+getDomainTableName ("phone_prefix",_,_) = "PhoneTransform"
+getDomainTableName ("currency",_,_)     = "CurrencyTransform"
+
+getDomainTablePrefix :: String -> String
+getDomainTablePrefix "phone_prefix"     = "PT_"
+getDomainTablePrefix "currency"         = "CT_"
+
+pruneJoinProvenanceList :: JoinProvenanceList -> JoinProvenanceList
+pruneJoinProvenanceList list =
+    let reducedMap = M.fromList (map (\(s,b,e) -> (getTableNamePrefixFromJoinProvenance (s,b,e), (s,b,e)))  list)
+    in  M.elems reducedMap
 
 -- allows MtRewriteSelect and MtRewriteWhere to call recurively back into MtLib using a Function rather than an import
 type RewriteQueryFun = MtSchemaSpec -> MtSetting -> Provenance -> Pa.QueryExpr -> Pa.TableRefList -> Either MtRewriteError (Provenance, Pa.QueryExpr)

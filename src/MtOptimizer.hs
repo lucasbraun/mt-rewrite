@@ -4,6 +4,7 @@ module MtOptimizer
 ) where
 
 import qualified Database.HsSqlPpp.Parse as Pa
+import qualified Database.HsSqlPpp.Annotation as A
 
 import MtTypes
 import MtUtils
@@ -232,19 +233,31 @@ needsSplitScalarEx _ = False
 -- # FUNCTION INLINING #
 -- #####################
 
+-- MsSQL adheres best to the SQL standard, so replacing everything with a select is not correct.
+-- We therefore need joins and, consequently some provenance that tells us what tables to join with
+-- check MTUtils for details...
+
 applyFunctionInlining :: Pa.QueryExpr -> Pa.QueryExpr
 applyFunctionInlining (Pa.Select ann selDistinct (Pa.SelectList a exps) selTref selWhere
         selGroupBy selHaving selOrderBy selLimit selOffset selOption) =
-    Pa.Select ann selDistinct (Pa.SelectList a (map inlineSelItem exps))
-        (map inlineTableRef selTref)
-        (inlineMaybeScalarExpr selWhere)
-        selGroupBy
-        (inlineMaybeScalarExpr selHaving)
+    let (newSels, jp1)  = foldr (\(ex, jpL1) (exList, jpL2) -> (ex:exList, jpL1 ++ jpL2)) ([],[]) (map inlineSelItem exps)
+        (inWhere, jp2)  = inlineMaybeScalarExpr selWhere
+        (newHaving, jp3)= inlineMaybeScalarExpr selHaving
+        newJoinProv     = pruneJoinProvenanceList (jp1 ++ jp2 ++ jp3)
+        newWhere        = createJoinPredicates inWhere newJoinProv
+        recTrefs        = map inlineTableRef selTref
+        newTrefs        = recTrefs ++ (createJoinTables newJoinProv)
+    in  Pa.Select ann selDistinct (Pa.SelectList a newSels)
+        newTrefs newWhere selGroupBy newHaving
         selOrderBy selLimit selOffset selOption
 
-inlineSelItem :: Pa.SelectItem -> Pa.SelectItem
-inlineSelItem (Pa.SelExp a ex) = Pa.SelExp a (inlineScalarExpr ex)
-inlineSelItem (Pa.SelectItem a ex n) = Pa.SelectItem a (inlineScalarExpr ex) n
+inlineSelItem :: Pa.SelectItem -> (Pa.SelectItem, JoinProvenanceList)
+inlineSelItem (Pa.SelExp a ex) =
+    let (newEx, jp) = inlineScalarExpr ex
+    in  (Pa.SelExp a newEx, jp)
+inlineSelItem (Pa.SelectItem a ex n) =
+    let (newEx, jp) = inlineScalarExpr ex
+    in  (Pa.SelectItem a newEx n, jp)
 
 -- we have to do this because if MtConversionDistribution is active, this might create additional query nesting
 -- handling these two cases, however, is enough
@@ -253,71 +266,118 @@ inlineTableRef (Pa.SubTref ann query) = Pa.SubTref ann (applyFunctionInlining qu
 inlineTableRef (Pa.TableAlias ann n tref) = Pa.TableAlias ann n (inlineTableRef tref)
 inlineTableRef t = t
 
+createJoinTables :: JoinProvenanceList -> Pa.TableRefList
+createJoinTables (jp:jpList) =
+    let (tTable, dTable)    = getTenantAndDomainTableName jp
+    in  [Pa.TableAlias A.emptyAnnotation (Pa.Nmc tTable) (Pa.Tref A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "Tenant"])),
+        Pa.TableAlias A.emptyAnnotation (Pa.Nmc dTable) (Pa.Tref A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc (getDomainTableName jp)]))]
+        ++ (createJoinTables jpList)
+createJoinTables [] = []
+
+createJoinPredicates :: Maybe Pa.ScalarExpr -> JoinProvenanceList -> Maybe Pa.ScalarExpr
+createJoinPredicates ex ((s,b,e):jpList) =
+    let others              = createJoinPredicates ex jpList
+        (tTable, dTable)    = getTenantAndDomainTableName (s,b,e)
+        newPred             =  Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "AND"])
+            (Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "="])
+                (Pa.Identifier A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc tTable, Pa.Nmc "T_tenant_key"])) e)
+            (Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "="])
+                (Pa.Identifier A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc tTable, Pa.Nmc ("T_" ++ s ++ "_key")]))
+                (Pa.Identifier A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc dTable, Pa.Nmc ((getDomainTablePrefix s) ++ s ++ "_key")])))
+        apply (Just w)  = Just $ Pa.BinaryOp A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc "AND"]) newPred w
+        apply Nothing   = Just $ newPred
+    in apply ex
+createJoinPredicates ex []  = ex
+
 -- inline recursively (without following sub queries, this will be handled by repeating calls to the optimizer from MtLib)
-inlineScalarExpr :: Pa.ScalarExpr -> Pa.ScalarExpr
+inlineScalarExpr :: Pa.ScalarExpr -> (Pa.ScalarExpr, JoinProvenanceList)
 -- For now, we actually hard-code the functions used in tpch
 inlineScalarExpr (Pa.App a0 (Pa.Name a1 [Pa.Nmc appName]) [arg1, arg2])
-    | containsString appName "currencyToUniversal" = Pa.ScalarSubQuery a0 (Pa.Select a0 Pa.All
-        (Pa.SelectList a0 [Pa.SelExp a0 (                                                                   -- SELECT
-            Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "*"]) (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "CT_to_universal"])) (inlineScalarExpr arg1))])
-        [Pa.Tref a0 (Pa.Name a0 [Pa.Nmc "Tenant"]), Pa.Tref a0 (Pa.Name a0 [Pa.Nmc "CurrencyTransform"])]   -- FROM
-        (Just (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "AND"])                                                   -- WHERE
-            (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "="]) (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "T_tenant_key"])) arg2)
-            (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "="]) (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "T_currency_key"]))
-                (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "CT_currency_key"])))))
-        [] Nothing [] Nothing Nothing [])
-    | containsString appName "currencyFromUniversal" = Pa.ScalarSubQuery a0 (Pa.Select a0 Pa.All
-        (Pa.SelectList a0 [Pa.SelExp a0 (                                                                   -- SELECT
-            Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "*"]) (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "CT_from_universal"])) (inlineScalarExpr arg1))])
-        [Pa.Tref a0 (Pa.Name a0 [Pa.Nmc "Tenant"]), Pa.Tref a0 (Pa.Name a0 [Pa.Nmc "CurrencyTransform"])]   -- FROM
-        (Just (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "AND"])                                                   -- WHERE
-            (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "="]) (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "T_tenant_key"])) arg2)
-            (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "="]) (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "T_currency_key"]))
-                (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "CT_currency_key"])))))
-        [] Nothing [] Nothing Nothing [])
+    | containsString appName "currencyToUniversal" =
+        let jp             = ("currency", False, arg2)
+            (_, dTable)    = getTenantAndDomainTableName jp
+            (new1, jp1)    = inlineScalarExpr arg1
+        in  (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "*"])
+                (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc dTable, Pa.Nmc "CT_to_universal"])) (Pa.Parens a0 new1),
+            jp:jp1)
+    | containsString appName "currencyFromUniversal" = 
+        let jp             = ("currency", True, arg2)
+            (_, dTable)    = getTenantAndDomainTableName jp
+            (new1, jp1)    = inlineScalarExpr arg1
+        in  (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "*"])
+                (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc dTable, Pa.Nmc "CT_from_universal"])) (Pa.Parens a0 new1),
+            jp:jp1)
     | containsString appName "phoneToUniversal" =
         let charlengthFun = if containsString appName "dbo." then "LEN" else "CHAR_LENGTH"
-        in  Pa.ScalarSubQuery a0 (Pa.Select a0 Pa.All
-            (Pa.SelectList a0 [Pa.SelExp a0 (                                                               -- SELECT
-                Pa.App a0 (Pa.Name a0 [Pa.Nmc "SUBSTRING"]) [inlineScalarExpr arg1, Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "+"])
-                    (Pa.App a0 (Pa.Name a0 [Pa.Nmc charlengthFun]) [Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "PT_prefix"])])
-                    (Pa.NumberLit a0 "1")])])
-            [Pa.Tref a0 (Pa.Name a0 [Pa.Nmc "Tenant"]), Pa.Tref a0 (Pa.Name a0 [Pa.Nmc "PhoneTransform"])]  -- FROM
-            (Just (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "AND"])                                               -- WHERE
-                (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "="]) (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "T_tenant_key"])) arg2)
-                (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "="]) (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "T_phone_prefix_key"]))
-                    (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "PT_phone_prefix_key"])))))
-            [] Nothing [] Nothing Nothing [])
+            jp             = ("phone_prefix", False, arg2)
+            (_, dTable)    = getTenantAndDomainTableName jp
+            (new1, jp1)    = inlineScalarExpr arg1
+        in  (Pa.App a0 (Pa.Name a0 [Pa.Nmc "SUBSTRING"]) [Pa.Parens a0 new1, Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "+"])
+                (Pa.App a0 (Pa.Name a0 [Pa.Nmc charlengthFun]) [Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc dTable, Pa.Nmc "PT_prefix"])])
+                (Pa.NumberLit a0 "1")],
+            jp:jp1)
     | containsString appName "phoneFromUniversal" =
-        let charlengthFun = if containsString appName "dbo." then "LEN" else "CHAR_LENGTH"
-        in  Pa.ScalarSubQuery a0 (Pa.Select a0 Pa.All
-            (Pa.SelectList a0 [Pa.SelExp a0 (                                                               -- SELECT
-                Pa.App a0 (Pa.Name a0 [Pa.Nmc "CONCAT"]) [Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "PT_prefix"]), inlineScalarExpr arg1])])
-            [Pa.Tref a0 (Pa.Name a0 [Pa.Nmc "Tenant"]), Pa.Tref a0 (Pa.Name a0 [Pa.Nmc "PhoneTransform"])]  -- FROM
-            (Just (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "AND"])                                               -- WHERE
-                (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "="]) (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "T_tenant_key"])) arg2)
-                (Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "="]) (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "T_phone_prefix_key"]))
-                    (Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc "PT_phone_prefix_key"])))))
-            [] Nothing [] Nothing Nothing [])
-    | otherwise     = Pa.App a0 (Pa.Name a1 [Pa.Nmc appName]) [inlineScalarExpr arg1, inlineScalarExpr arg2]
+        let jp             = ("phone_prefix", True, arg2)
+            (_, dTable)    = getTenantAndDomainTableName jp
+            (new1, jp1)    = inlineScalarExpr arg1
+        in  (Pa.App a0 (Pa.Name a0 [Pa.Nmc "CONCAT"]) [Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc dTable, Pa.Nmc "PT_prefix"]),
+                Pa.Parens a0 new1],
+            jp:jp1)
+    | otherwise     =
+        let (new1, jp1) = inlineScalarExpr arg1
+            (new2, jp2) = inlineScalarExpr arg2
+        in (Pa.App a0 (Pa.Name a1 [Pa.Nmc appName]) [new1, new2], jp1 ++ jp2)
 -- all other cases
-inlineScalarExpr (Pa.PrefixOp a n ex) = Pa.PrefixOp a n (inlineScalarExpr ex)
-inlineScalarExpr (Pa.PostfixOp a n ex) = Pa.PostfixOp a n (inlineScalarExpr ex)
-inlineScalarExpr (Pa.BinaryOp a n e1 e2) = Pa.BinaryOp a n (inlineScalarExpr e1) (inlineScalarExpr e2)
-inlineScalarExpr (Pa.SpecialOp a n exps) = Pa.SpecialOp a n (map inlineScalarExpr exps)
-inlineScalarExpr (Pa.App a n exps) = Pa.App a n (map inlineScalarExpr exps)
-inlineScalarExpr (Pa.Parens a ex) = Pa.Parens a (inlineScalarExpr ex)
+inlineScalarExpr (Pa.PrefixOp a n ex) =
+    let (newEx,jp)  = inlineScalarExpr ex
+    in  (Pa.PrefixOp a n newEx, jp)
+inlineScalarExpr (Pa.PostfixOp a n ex) =
+    let (newEx, jp) = inlineScalarExpr ex
+    in (Pa.PostfixOp a n newEx, jp)
+inlineScalarExpr (Pa.BinaryOp a n e1 e2) =
+    let (new1, jp1) = inlineScalarExpr e1
+        (new2, jp2) = inlineScalarExpr e2
+    in  (Pa.BinaryOp a n new1 new2, jp1++jp2)
+inlineScalarExpr (Pa.SpecialOp a n exps) =
+    let (nExps, jp) = inlineScalarExprList exps
+    in  (Pa.SpecialOp a n nExps, jp)
+inlineScalarExpr (Pa.App a n exps) =
+    let (nExps, jp) = inlineScalarExprList exps
+    in  (Pa.App a n nExps, jp)
+inlineScalarExpr (Pa.Parens a ex) =
+    let (newEx, jp) = inlineScalarExpr ex
+    in  (Pa.Parens a ex, jp)
 inlineScalarExpr (Pa.InPredicate a0 ex b (Pa.InList a1 exps)) =
-    Pa.InPredicate a0 (inlineScalarExpr ex) b (Pa.InList a1 (map inlineScalarExpr exps))
-inlineScalarExpr (Pa.Case a0 cases els) = Pa.Case a0 (inlineCases cases) (inlineMaybeScalarExpr els)
-inlineScalarExpr (Pa.AggregateApp a d ex o) = Pa.AggregateApp a d (inlineScalarExpr ex) o
-inlineScalarExpr ex = ex
+    let (nExps, jps)=  inlineScalarExprList exps
+        (nEx, jp)   =  inlineScalarExpr ex
+    in  (Pa.InPredicate a0 nEx b (Pa.InList a1 nExps), jp++jps)
+inlineScalarExpr (Pa.Case a0 cases els) =
+    let (nEx, jp)   = inlineMaybeScalarExpr els
+        (nExps, jps)= inlineCases cases
+    in  (Pa.Case a0 nExps nEx, jp++jps)
+inlineScalarExpr (Pa.AggregateApp a d ex o) =
+    let (nEx, jp)   = inlineScalarExpr ex
+    in  (Pa.AggregateApp a d nEx o, jp)
+inlineScalarExpr ex = (ex, [])
 
-inlineCases :: CasesType -> CasesType
-inlineCases ((elist, expr):rest) = (map inlineScalarExpr elist, inlineScalarExpr expr) : inlineCases rest
-inlineCases [] = []
+inlineMaybeScalarExpr :: Maybe Pa.ScalarExpr -> (Maybe Pa.ScalarExpr, JoinProvenanceList)
+inlineMaybeScalarExpr (Just ex) =
+    let (newEx, jp) = inlineScalarExpr ex
+    in  (Just newEx, jp)
+inlineMaybeScalarExpr Nothing   = (Nothing, [])
 
-inlineMaybeScalarExpr :: Maybe Pa.ScalarExpr -> Maybe Pa.ScalarExpr
-inlineMaybeScalarExpr (Just ex) = Just (inlineScalarExpr ex)
-inlineMaybeScalarExpr Nothing   = Nothing
+inlineScalarExprList :: Pa.ScalarExprList -> (Pa.ScalarExprList, JoinProvenanceList)
+inlineScalarExprList (ex:exprs) =
+    let (others, jp)    = inlineScalarExprList exprs
+        (newEx, jp1)    = inlineScalarExpr ex
+    in  (newEx:others, jp1++jp)
+inlineScalarExprList [] = ([], [])
+
+inlineCases :: CasesType -> (CasesType, JoinProvenanceList)
+inlineCases ((elist, expr):rest) =
+    let (others, jp)    = inlineScalarExprList elist
+        (newRest, jp1)  = inlineCases rest
+        (newEx, jp2)    = inlineScalarExpr expr
+    in  ((others, newEx):newRest, jp2++jp1++jp)
+inlineCases [] = ([], [])
 
