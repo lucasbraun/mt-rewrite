@@ -129,7 +129,7 @@ rewriteQuery spec setting p0 (Pa.Select ann selDistinct selSelectList selTref se
         let newOrderBy      = rewriteOrderByClause spec selTref selOrderBy
         Right (p4, mtOptimize setting (
             Pa.Select ann selDistinct newSelectList newTrefs filteredWhere
-            newGroupBy newHaving newOrderBy selLimit selOffset selOption))
+            newGroupBy newHaving newOrderBy selLimit selOffset selOption) (null trefs))
 rewriteQuery _ _ _ query _ = Left $ FromMtRewriteError $ "Rewrite function not yet implemented for query expression " ++ show query
 
 -- ## REWRITE FUNCTIONS ##

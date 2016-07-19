@@ -17,6 +17,7 @@ module MtUtils
     ,getTenantAndDomainTableName
     ,getDomainTableName
     ,getDomainTablePrefix
+    ,getGroupByStringFromJP
     ,pruneJoinProvenanceList
     ,RewriteQueryFun
     ,CasesType
@@ -165,6 +166,11 @@ getDomainTableName ("currency",_,_)     = "CurrencyTransform"
 getDomainTablePrefix :: String -> String
 getDomainTablePrefix "phone_prefix"     = "PT_"
 getDomainTablePrefix "currency"         = "CT_"
+
+getGroupByStringFromJP :: JoinProvenance -> String
+getGroupByStringFromJP ("phone_prefix", _, _)   = "PT_prefix"
+getGroupByStringFromJP ("currency", False,_)    = "CT_to_universal"
+getGroupByStringFromJP ("currency", True,_)     = "CT_from_universal"
 
 pruneJoinProvenanceList :: JoinProvenanceList -> JoinProvenanceList
 pruneJoinProvenanceList list =
