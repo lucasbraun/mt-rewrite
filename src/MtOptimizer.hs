@@ -320,9 +320,9 @@ inlineScalarExpr (Pa.App a0 (Pa.Name a1 [Pa.Nmc appName]) [arg1, arg2])
             (_, dTable)     = getTenantAndDomainTableName jp
             (new1, jp1)     = inlineScalarExpr arg1
             newExp          = if containsString appName "dbo."
-                then Pa.App a0 (Pa.Name a0 [Pa.Nmc "SUBSTRING"]) [Pa.Parens a0 new1, 
-                    (Pa.App a0 (Pa.Name a0 [Pa.Nmc "LEN"]) [Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc dTable, Pa.Nmc "PT_prefix"])]),
-                        Pa.NumberLit a0 "15"]
+                then Pa.App a0 (Pa.Name a0 [Pa.Nmc "SUBSTRING"]) [Pa.Parens a0 new1, Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "+"])
+                    (Pa.App a0 (Pa.Name a0 [Pa.Nmc "LEN"]) [Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc dTable, Pa.Nmc "PT_prefix"])])
+                        (Pa.NumberLit a0 "1"), (Pa.NumberLit a0 "15")]
                 else Pa.App a0 (Pa.Name a0 [Pa.Nmc "SUBSTRING"]) [Pa.Parens a0 new1, Pa.BinaryOp a0 (Pa.Name a0 [Pa.Nmc "+"])
                     (Pa.App a0 (Pa.Name a0 [Pa.Nmc "CHAR_LENGTH"]) [Pa.Identifier a0 (Pa.Name a0 [Pa.Nmc dTable, Pa.Nmc "PT_prefix"])])
                         (Pa.NumberLit a0 "1")]
