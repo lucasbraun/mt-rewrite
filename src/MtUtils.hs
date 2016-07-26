@@ -42,6 +42,7 @@ module MtUtils
     ,isCnt
     ,getOutAggFromInnerAgg
     ,printName
+    ,nameCmpContainsString
     ,containsString
     ,removeDuplicates
 ) where
@@ -321,8 +322,12 @@ printName :: Pa.Name -> String
 printName (Pa.Name _ (Pa.Nmc name:names)) = foldl (\w (Pa.Nmc n) -> w ++ "." ++ n) name names
 printName _ = ""
 
+-- same as containsString, but for name components
+nameCmpContainsString :: Pa.NameComponent -> Pa.NameComponent -> Bool
+nameCmpContainsString (Pa.Nmc a) (Pa.Nmc b) = containsString a b
+
 -- checks whether a string contains a certain substring
-containsString :: String -> String ->Bool
+containsString :: String -> String -> Bool
 containsString l s = containsString' l s True where
     containsString' _ [] _          = True
     containsString' [] _ _          = False

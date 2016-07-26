@@ -247,7 +247,7 @@ applyFunctionInlining (Pa.Select ann selDistinct (Pa.SelectList a exps) selTref 
         newWhere        = createJoinPredicates inWhere newJoinProv
         recTrefs        = map inlineTableRef selTref
         newTrefs        = recTrefs ++ (createJoinTables newJoinProv)
-        newGroupBy      = if (null selGroupBy) && (not b) then [] else (selGroupBy ++ (createJoinGroupByClauses newJoinProv))
+        newGroupBy      = mergeGroupByClauses selGroupBy (createJoinGroupByClauses newJoinProv b) newSels
     in  Pa.Select ann selDistinct (Pa.SelectList a newSels)
         newTrefs newWhere newGroupBy newHaving
         selOrderBy selLimit selOffset selOption
@@ -259,6 +259,29 @@ inlineSelItem (Pa.SelExp a ex) =
 inlineSelItem (Pa.SelectItem a ex n) =
     let (newEx, jp) = inlineScalarExpr ex
     in  (Pa.SelectItem a newEx n, jp)
+
+-- takes the first list of existing group-by terms and drops the ones that are (in an exteded form) already in the second list
+-- However, they can only be pruned if they do not appear in the select list, so carefully also check that (third argument)
+mergeGroupByClauses :: Pa.ScalarExprList -> Pa.ScalarExprList -> Pa.SelectItemList -> Pa.ScalarExprList
+mergeGroupByClauses ((Pa.Identifier a0 (Pa.Name a1 origCs)):l) newList selList= 
+    let contains nc1 nc2
+            | (length nc2) > 1 && (length nc1) > 0  = nameCmpContainsString (last (init nc2)) (last nc1)
+            | otherwise                             = False
+        containsSelect nc1 nc2
+            | (length nc1) > 1 && (length nc2) > 0  = nameCmpContainsString (last nc2) (last nc1)
+            | otherwise                             = False
+        merge True  _ _  = True
+        merge False nameComps1 (Pa.Identifier _ (Pa.Name _ nameComps2)) = contains nameComps1 nameComps2
+        merge False _ _  = False
+        mergeGB True _ _ = True
+        mergeGB False nameComps1 (Pa.SelExp _ (Pa.Identifier _ (Pa.Name _ nameComps2))) = containsSelect nameComps1 nameComps2
+        mergeGB False nameComps1 (Pa.SelectItem _ (Pa.Identifier _ (Pa.Name _ nameComps2)) newName) =
+            (containsSelect nameComps1 nameComps2) || (containsSelect nameComps1 [newName]) 
+        mergeGB False _ _ = False
+        exists  = (foldl (\b exp -> merge b origCs exp) False newList) && (not (foldl (\b exp -> mergeGB b origCs exp) False selList))
+    in  if exists then (mergeGroupByClauses l newList selList) else (mergeGroupByClauses l ((Pa.Identifier a0 (Pa.Name a1 origCs)):newList) selList)
+mergeGroupByClauses (item:items) newList selList = mergeGroupByClauses items (item:newList) selList
+mergeGroupByClauses [] newList _ = newList
 
 -- we have to do this because if MtConversionDistribution is active, this might create additional query nesting
 -- handling these two cases, however, is enough
@@ -290,14 +313,16 @@ createJoinPredicates ex ((s,b,e):jpList) =
     in apply others
 createJoinPredicates ex []  = ex
 
-createJoinGroupByClauses :: JoinProvenanceList -> Pa.ScalarExprList
-createJoinGroupByClauses (jp:jpList) =
-    let others              = createJoinGroupByClauses jpList
-        (_, dTable)    = getTenantAndDomainTableName jp
-    in  (Pa.Identifier A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc dTable, Pa.Nmc (getGroupByStringFromJP jp)])):others
-createJoinGroupByClauses [] = []
+createJoinGroupByClauses :: JoinProvenanceList -> Bool -> Pa.ScalarExprList
+createJoinGroupByClauses (jp:jpList) b =
+    let others          = createJoinGroupByClauses jpList b
+        (_, dTable)     = getTenantAndDomainTableName jp
+        newExpr         = if (b && not (containsString dTable "from"))  then []
+            else [Pa.Identifier A.emptyAnnotation (Pa.Name A.emptyAnnotation [Pa.Nmc dTable, Pa.Nmc (getGroupByStringFromJP jp)])]
+    in  newExpr ++ others
+createJoinGroupByClauses [] _ = []
 
--- inline recursively (without following sub queries, this will be handled by repeating calls to the optimizer from MtLib)
+-- inline recursively (without following sub queries, this will be handled by repeating calls to the optimizer from MtLib/inlineTableRef)
 inlineScalarExpr :: Pa.ScalarExpr -> (Pa.ScalarExpr, JoinProvenanceList)
 -- For now, we actually hard-code the functions used in tpch
 inlineScalarExpr (Pa.App a0 (Pa.Name a1 [Pa.Nmc appName]) [arg1, arg2])
